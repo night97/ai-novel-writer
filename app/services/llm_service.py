@@ -916,7 +916,7 @@ JSON格式：
 
     def generate_volume_chapters(self, genre: str, title: str, volume_info: str, world_setting: str, characters: str,
                                volume_index: int, start_chapter: int, chapters_count: int, total_chapters: int,
-                               user_prompt: str) -> List[dict]:
+                               user_prompt: str, existing_context: str = "") -> List[dict]:
         """在已有卷骨架基础上，生成指定范围的章节"""
         system_prompt = f"""你是专业网络小说大纲设计师。为{genre}类型小说这一卷生成指定范围的章节大纲。
 
@@ -925,6 +925,8 @@ JSON格式：
 - 严格遵循卷骨架给定的整体结构和节拍表
 - 每3-5章必须有一个小高潮/爽点
 - 遵循"防幻觉三定律": 大纲就是法律，后续写作必须严格遵循
+- 严禁重复已发生事件：同样的场景+目标+敌人组合不能再次出现
+- 每章必须有“信息增量”：至少推进一个新情报/新代价/新关系变化
 - 每章必须标记：
   * strand: Quest(主线推进)/Fire(感情线)/Constellation(世界观扩展)
   * cool_point_type: 悬念爽/反转爽/智斗爽/打脸爽/升级爽/选择爽/绝境求生爽
@@ -961,6 +963,9 @@ JSON格式：
 
 角色列表：
 {characters}
+
+【已生成章节上下文与去重约束】
+{existing_context}
 
 请生成第 {volume_index} 卷的第 {start_chapter} - {start_chapter + chapters_count - 1} 章，共 {chapters_count} 章。
 本卷总共 {total_chapters} 章。记住只返回JSON："""

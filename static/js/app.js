@@ -2162,6 +2162,9 @@ async function loadOutline(projectId) {
             for (const row of allRows) {
                 const { vol, chap, displayVolumeIndex } = row;
                 const statusClass = chap.is_generated ? 'border-green-400 bg-green-50' : 'border-gray-200';
+                const targetWordsDisplay = (Number.isFinite(Number(chap.target_words)) && Number(chap.target_words) > 0)
+                    ? Number(chap.target_words)
+                    : parseTargetWordsFromReference(chap.word_count_reference, (currentProject && currentProject.target_words_per_chapter) ? Number(currentProject.target_words_per_chapter) : 2000);
                 const actionBtn = chap.is_generated
                     ? `<button onclick="openChapter(${projectId}, ${chap.id})" class="px-2 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700 transition">查看/编辑</button>`
                     : `<button onclick="generateChapter(${projectId}, ${chap.id}, this, ${Number(chap.target_words || 0)})" class="px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition">生成</button>`;
@@ -2171,8 +2174,12 @@ async function loadOutline(projectId) {
                             <div>
                                 <div class="text-xs text-gray-500">第${displayVolumeIndex}卷 · ${escapeHtml(vol.title || '')}</div>
                                 <div class="font-medium text-sm">第${chap.chapter_index}章：${escapeHtml(chap.title)}</div>
+                                <div class="text-xs text-gray-500 mt-1">目标字数：${targetWordsDisplay}</div>
                             </div>
-                            ${actionBtn}
+                            <div class="flex items-center gap-2">
+                                <button onclick="quickEditChapterTargetWords(${projectId}, ${chap.id}, ${targetWordsDisplay})" class="px-2 py-1 border text-xs rounded hover:bg-gray-100">改字数</button>
+                                ${actionBtn}
+                            </div>
                         </div>
                         ${chap.outline ? `<p class="text-xs text-gray-600 mt-1">${escapeHtml(chap.outline)}</p>` : ''}
                     </div>
@@ -2210,6 +2217,9 @@ async function loadOutline(projectId) {
 
                 for (const chap of chapters) {
                     const statusClass = chap.is_generated ? 'border-green-400 bg-green-50' : 'border-gray-200';
+                    const targetWordsDisplay = (Number.isFinite(Number(chap.target_words)) && Number(chap.target_words) > 0)
+                        ? Number(chap.target_words)
+                        : parseTargetWordsFromReference(chap.word_count_reference, (currentProject && currentProject.target_words_per_chapter) ? Number(currentProject.target_words_per_chapter) : 2000);
                     const statusText = chap.is_generated
                         ? `<button onclick="openChapter(${projectId}, ${chap.id})" class="px-2 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700 transition">查看/编辑</button>`
                         : `<button onclick="generateChapter(${projectId}, ${chap.id}, this, ${Number(chap.target_words || 0)})" class="px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition">生成</button>`;
@@ -2220,7 +2230,11 @@ async function loadOutline(projectId) {
                                 <span class="font-medium text-sm">
                                     第${chap.chapter_index}章：${escapeHtml(chap.title)}
                                 </span>
-                                ${statusText}
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs text-gray-500">目标字数：${targetWordsDisplay}</span>
+                                    <button onclick="quickEditChapterTargetWords(${projectId}, ${chap.id}, ${targetWordsDisplay})" class="px-2 py-1 border text-xs rounded hover:bg-gray-100">改字数</button>
+                                    ${statusText}
+                                </div>
                             </div>
                             ${chap.outline ? `<p class="text-xs text-gray-600 mt-1">${escapeHtml(chap.outline)}</p>` : ''}
                         </div>
@@ -2303,6 +2317,36 @@ function parseTargetWordsFromReference(refValue, fallback = 2000) {
     const singleMatch = norm.match(/(\d{3,6})/);
     if (singleMatch) return parseInt(singleMatch[1], 10);
     return fb;
+}
+
+async function quickEditChapterTargetWords(projectId, chapterId, currentValue = 2000) {
+    const val = await uiPrompt('请输入本章目标字数（500-20000，留空则恢复为自动）', String(currentValue || 2000), '修改章节字数');
+    if (val === null) return;
+    const txt = String(val || '').trim();
+    let payloadValue = null;
+    if (txt) {
+        const n = parseInt(txt, 10);
+        if (!Number.isFinite(n) || n < 500 || n > 20000) {
+            await uiAlert('字数范围应在 500-20000');
+            return;
+        }
+        payloadValue = n;
+    }
+    try {
+        await apiRequest(`/api/outline/chapters/${chapterId}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                target_words: payloadValue
+            })
+        });
+        await uiAlert('章节目标字数已更新');
+        await loadOutline(projectId);
+        if (currentTab === 'write') {
+            await loadGeneratedChapters(projectId);
+        }
+    } catch (e) {
+        await uiAlert('更新失败: ' + e.message);
+    }
 }
 
 async function generateChapter(projectId, chapterId, btnEl = null, targetWordsHint = 0) {

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Dict
+from difflib import SequenceMatcher
 from app.database import get_db
 from app.models.models import NovelProject, WorldSetting, Character, Volume, Chapter, ProjectCreativeProfile
 from app.models.schemas import VolumeResponse, ChapterResponse, GenerateOutlineRequest
@@ -355,6 +356,97 @@ def _normalize_generated_chapter_items(raw, start_chapter: int, end_chapter: int
 
     return [normalized[k] for k in sorted(normalized.keys())]
 
+
+def _chapter_row_to_outline_dict(ch: Chapter) -> dict:
+    return {
+        "chapter_index": int(ch.chapter_index or 0),
+        "title": ch.title or "",
+        "goal": ch.goal or "",
+        "conflict": ch.conflict or "",
+        "hook": ch.hook or "",
+        "outline": ch.outline or "",
+    }
+
+
+def _merge_history_items(db_rows: List[Chapter], generated_rows: List[dict], before_idx: int) -> List[dict]:
+    """合并历史章节摘要：数据库 + 本次已生成（仅取 before_idx 之前）。"""
+    by_idx: Dict[int, dict] = {}
+    for ch in db_rows:
+        idx = int(ch.chapter_index or 0)
+        if idx <= 0 or idx >= before_idx:
+            continue
+        by_idx[idx] = _chapter_row_to_outline_dict(ch)
+
+    for g in generated_rows:
+        if not isinstance(g, dict):
+            continue
+        try:
+            idx = int(g.get("chapter_index") or 0)
+        except Exception:
+            idx = 0
+        if idx <= 0 or idx >= before_idx:
+            continue
+        by_idx[idx] = {
+            "chapter_index": idx,
+            "title": g.get("title", "") or "",
+            "goal": g.get("goal", "") or "",
+            "conflict": g.get("conflict", "") or "",
+            "hook": g.get("hook", "") or "",
+            "outline": g.get("outline", "") or "",
+        }
+    return [by_idx[k] for k in sorted(by_idx.keys())]
+
+
+def _build_existing_outline_context(history_items: List[dict], limit: int = 14) -> str:
+    if not history_items:
+        return "暂无历史章节。"
+    recent = history_items[-limit:]
+    lines = ["最近已生成章节摘要（必须承接，禁止重复同事件）："]
+    for it in recent:
+        idx = it.get("chapter_index", "")
+        title = it.get("title", "")
+        goal = it.get("goal", "")
+        conflict = it.get("conflict", "")
+        outline = it.get("outline", "")
+        if len(outline) > 120:
+            outline = outline[:120] + "..."
+        lines.append(
+            f"- 第{idx}章《{title}》｜目标:{goal}｜冲突:{conflict}｜概要:{outline}"
+        )
+    lines.append("硬约束：不能重复上述章节的主场景+主目标+主敌人组合；必须提供新信息增量。")
+    return "\n".join(lines)
+
+
+def _normalize_similarity_text(text: str) -> str:
+    raw = str(text or "")
+    raw = re.sub(r"\s+", "", raw)
+    raw = re.sub(r"[，。！？、；：,.!?;:（）()【】\\[\\]\"'“”‘’·—\\-_/]", "", raw)
+    return raw[:1800]
+
+
+def _chapter_signature_text(item: dict) -> str:
+    return " ".join([
+        str(item.get("title", "") or ""),
+        str(item.get("goal", "") or ""),
+        str(item.get("conflict", "") or ""),
+        str(item.get("outline", "") or ""),
+        str(item.get("hook", "") or ""),
+    ]).strip()
+
+
+def _is_outline_duplicate(candidate: dict, history_items: List[dict], threshold: float = 0.78) -> bool:
+    cand = _normalize_similarity_text(_chapter_signature_text(candidate))
+    if not cand:
+        return False
+    for h in history_items:
+        ref = _normalize_similarity_text(_chapter_signature_text(h))
+        if not ref:
+            continue
+        score = SequenceMatcher(None, cand, ref).ratio()
+        if score >= threshold:
+            return True
+    return False
+
 @router.post("/generate-volume-chapters")
 def generate_volume_chapters(request: GenerateVolumeChaptersRequest, db: Session = Depends(get_db)):
     """在已有卷骨架中，分批生成指定范围的章节"""
@@ -397,11 +489,19 @@ def generate_volume_chapters(request: GenerateVolumeChaptersRequest, db: Session
         raise HTTPException(status_code=400, detail="章节范围非法：end_chapter 不能小于 start_chapter")
 
     chunk_size = 10  # 单次最大10章，防止输出截断
+    existing_outline_rows = db.query(Chapter)\
+        .filter(Chapter.project_id == request.project_id)\
+        .filter(Chapter.volume_id == request.volume_id)\
+        .order_by(Chapter.chapter_index)\
+        .all()
+
     all_generated: List[dict] = []
     current = target_start
     while current <= target_end:
         chunk_end = min(current + chunk_size - 1, target_end)
         count = chunk_end - current + 1
+        history_items = _merge_history_items(existing_outline_rows, all_generated, current)
+        existing_context = _build_existing_outline_context(history_items)
         raw_chunk = llm_service.generate_volume_chapters(
             genre=project.genre,
             title=project.title,
@@ -412,7 +512,8 @@ def generate_volume_chapters(request: GenerateVolumeChaptersRequest, db: Session
             start_chapter=current,
             chapters_count=count,
             total_chapters=request.total_chapters,
-            user_prompt=prompt_user
+            user_prompt=prompt_user,
+            existing_context=existing_context
         )
         chunk = _normalize_generated_chapter_items(raw_chunk, current, chunk_end)
 
@@ -421,6 +522,8 @@ def generate_volume_chapters(request: GenerateVolumeChaptersRequest, db: Session
             got = {int(x.get("chapter_index")) for x in chunk if x.get("chapter_index") is not None}
             missing = [idx for idx in range(current, chunk_end + 1) if idx not in got]
             for miss_idx in missing:
+                miss_history = _merge_history_items(existing_outline_rows, all_generated + chunk, miss_idx)
+                miss_context = _build_existing_outline_context(miss_history)
                 patch_raw = llm_service.generate_volume_chapters(
                     genre=project.genre,
                     title=project.title,
@@ -431,13 +534,52 @@ def generate_volume_chapters(request: GenerateVolumeChaptersRequest, db: Session
                     start_chapter=miss_idx,
                     chapters_count=1,
                     total_chapters=request.total_chapters,
-                    user_prompt=prompt_user
+                    user_prompt=prompt_user,
+                    existing_context=miss_context
                 )
                 patch = _normalize_generated_chapter_items(patch_raw, miss_idx, miss_idx)
                 if patch:
                     chunk.extend(patch)
 
         chunk = _normalize_generated_chapter_items(chunk, current, chunk_end)
+        # 去重兜底：若和历史章节过于相似，自动单章重写一次
+        deduped_chunk: List[dict] = []
+        for item in chunk:
+            try:
+                idx = int(item.get("chapter_index") or 0)
+            except Exception:
+                idx = 0
+            if idx <= 0:
+                deduped_chunk.append(item)
+                continue
+
+            history_for_item = _merge_history_items(existing_outline_rows, all_generated + deduped_chunk, idx)
+            if _is_outline_duplicate(item, history_for_item):
+                rewrite_prompt = (
+                    prompt_user
+                    + f"\n\n【反重复修正】第{idx}章与历史章节过于相似。"
+                      "请重写为全新事件组合（场景/目标/敌人至少替换两项），并保持主线推进。"
+                )
+                rewrite_raw = llm_service.generate_volume_chapters(
+                    genre=project.genre,
+                    title=project.title,
+                    volume_info=volume_info,
+                    world_setting=world_text,
+                    characters=chars_text,
+                    volume_index=request.volume_index,
+                    start_chapter=idx,
+                    chapters_count=1,
+                    total_chapters=request.total_chapters,
+                    user_prompt=rewrite_prompt,
+                    existing_context=_build_existing_outline_context(history_for_item)
+                )
+                rewrite = _normalize_generated_chapter_items(rewrite_raw, idx, idx)
+                if rewrite and not _is_outline_duplicate(rewrite[0], history_for_item, threshold=0.76):
+                    item = rewrite[0]
+
+            deduped_chunk.append(item)
+
+        chunk = _normalize_generated_chapter_items(deduped_chunk, current, chunk_end)
         all_generated.extend(chunk)
         current = chunk_end + 1
 
