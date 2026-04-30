@@ -12,13 +12,25 @@ if [[ -f ".env" ]]; then
   cp -f ".env" ".deploy_backups/.env.${ts}.bak"
 fi
 
+PYTHON_BIN="python3"
+PIP_CMD="python3 -m pip"
+
 if [[ ! -d ".venv" ]]; then
-  python3 -m venv .venv
+  if python3 -m venv .venv; then
+    echo "venv created."
+  else
+    echo "WARN: python3 -m venv failed, fallback to system python."
+  fi
 fi
 
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+if [[ -f ".venv/bin/activate" ]]; then
+  source .venv/bin/activate
+  PYTHON_BIN="python"
+  PIP_CMD="pip"
+fi
+
+$PYTHON_BIN -m pip install --upgrade pip
+$PIP_CMD install -r requirements.txt
 
 if [[ -n "${APP_ENV_FILE_CONTENT:-}" ]]; then
   if [[ ! -f ".env" ]]; then
@@ -29,7 +41,7 @@ fi
 touch novel_writer.db
 
 pkill -f "uvicorn main:app" || true
-nohup .venv/bin/python -m uvicorn main:app \
+nohup $PYTHON_BIN -m uvicorn main:app \
   --host "${APP_HOST:-0.0.0.0}" \
   --port "${APP_PORT:-8004}" \
   > deploy.log 2>&1 &
