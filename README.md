@@ -35,6 +35,25 @@ python main.py
 
 然后打开浏览器访问 `http://localhost:8004`
 
+## GitHub Actions 自动部署
+
+仓库内已提供工作流：`.github/workflows/deploy.yml`。
+
+触发方式：
+- push 到 `main`
+- 在 GitHub Actions 页面手动触发
+
+请在仓库 `Settings -> Secrets and variables -> Actions` 配置以下 Secrets：
+
+- `DEPLOY_HOST`：服务器地址（例如 `175.178.38.220`）
+- `DEPLOY_PORT`：SSH 端口（例如 `22`）
+- `DEPLOY_USER`：SSH 用户（例如 `ubuntu`）
+- `DEPLOY_SSH_KEY`：部署私钥全文（OpenSSH 格式）
+- `DEPLOY_PATH`：服务器部署目录（例如 `/home/ubuntu/ai-novel-writer`）
+- `APP_PORT`：应用端口（建议 `8004`）
+- `APP_HOST`：应用监听地址（建议 `0.0.0.0`）
+- `APP_ENV_FILE_CONTENT`：线上 `.env` 文件完整内容（多行文本）
+
 ## 技术架构
 
 - **后端**: Python FastAPI
