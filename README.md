@@ -33,7 +33,7 @@ cp .env.example .env
 python main.py
 ```
 
-然后打开浏览器访问 `http://localhost:8000`
+然后打开浏览器访问 `http://localhost:8004`
 
 ## 技术架构
 
