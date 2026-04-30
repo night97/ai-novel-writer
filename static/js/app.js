@@ -5,6 +5,7 @@ let currentWorkbenchModule = null;
 let currentChatModule = 'master_outline';
 let mobileChatVersionsCache = [];
 let outlineViewMode = 'volume';
+let outlineVolumeProgressCache = [];
 
 // ========== 统一弹窗 ==========
 function ensureUiModalHost() {
@@ -1166,6 +1167,10 @@ function switchTab(tab) {
             </div>
             <div id="outlineAdvancedBox" class="hidden">
                 <div class="flex gap-4 mb-4 items-end">
+                    <div class="min-w-[280px]">
+                        <label class="block text-sm text-gray-600 mb-1">目标卷</label>
+                        <select id="batchTargetVolume" class="w-full px-2 py-1 border rounded"></select>
+                    </div>
                     <div>
                         <label class="block text-sm text-gray-600 mb-1">总章节数</label>
                         <input type="number" id="totalChapters" value="50" min="10" max="100" class="w-24 px-2 py-1 border rounded">
@@ -1182,6 +1187,9 @@ function switchTab(tab) {
                     <button onclick="generateNextBatch(${projectId})" id="btnGenerateBatch" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">
                         2. 生成下一批章节
                     </button>
+                    <button onclick="generateAllRemainingChapters(${projectId})" id="btnGenerateAllRemaining" class="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 transition">
+                        3. 一键补齐本卷剩余章节
+                    </button>
                 </div>
             </div>
             <div id="outlineContent" class="space-y-3">
@@ -1195,12 +1203,53 @@ function switchTab(tab) {
     } else if (tab === 'write') {
         contentEl.innerHTML = `
             <div id="writeContent" class="space-y-3">
+                <div class="border rounded-lg p-4 bg-indigo-50">
+                    <div class="font-semibold text-gray-800">正文批量生成（连续剧情模式）</div>
+                    <div class="text-sm text-gray-600 mt-1">推荐每批 <strong>5章</strong>：稳定、连贯、失败重试成本低。下一批会自动从未生成章节继续，并继承前文上下文。</div>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mt-3">
+                        <div class="md:col-span-2">
+                            <label class="block text-sm text-gray-600 mb-1">目标卷</label>
+                            <select id="writeBatchVolume" class="w-full px-3 py-2 border rounded"></select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-600 mb-1">每批章数</label>
+                            <input id="writeBatchSize" type="number" min="1" max="10" value="5" class="w-full px-3 py-2 border rounded">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-600 mb-1">目标字数（可选）</label>
+                            <input id="writeBatchTargetWords" type="number" min="500" max="20000" step="100" placeholder="留空=按章配置" class="w-full px-3 py-2 border rounded">
+                        </div>
+                    </div>
+                    <div id="writeBatchPendingInfo" class="text-xs text-gray-600 mt-2"></div>
+                    <div class="flex gap-2 flex-wrap mt-3">
+                        <button id="btnWriteBatchNext" onclick="generateWriteNextBatch(${projectId})" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">生成下一批正文</button>
+                        <button id="btnWriteBatchAll" onclick="generateWriteAllRemaining(${projectId})" class="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 transition">一键补齐本卷剩余正文</button>
+                    </div>
+                    <div id="writeBatchProgressWrap" class="hidden mt-3">
+                        <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
+                            <span id="writeBatchProgressText">准备中...</span>
+                            <span id="writeBatchProgressPercent">0%</span>
+                        </div>
+                        <div class="h-2 rounded bg-gray-200 overflow-hidden">
+                            <div id="writeBatchProgressBar" class="h-2 bg-indigo-600 transition-all duration-300" style="width:0%"></div>
+                        </div>
+                    </div>
+                    <div id="writeBatchResult" class="text-xs mt-2 text-gray-600"></div>
+                    <div id="writeBatchFailedBox" class="hidden mt-3 border border-amber-200 bg-amber-50 rounded p-2">
+                        <div class="flex items-center justify-between">
+                            <div class="text-xs font-medium text-amber-800">失败章节列表</div>
+                            <button id="btnWriteRetryFailed" onclick="retryWriteFailedChapters()" class="px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 transition">重试失败章节</button>
+                        </div>
+                        <div id="writeBatchFailedList" class="mt-2 text-xs text-amber-900 space-y-1"></div>
+                    </div>
+                </div>
                 <div class="text-center py-8 text-gray-500" id="writeEmpty">
                     <p>请先生成大纲和章节，生成好的正文会显示在这里</p>
                 </div>
                 <div id="generatedChapters" class="hidden space-y-4"></div>
             </div>
         `;
+        loadWriteBatchPanel(projectId);
         loadGeneratedChapters(projectId);
     } else if (tab === 'export') {
         contentEl.innerHTML = `
@@ -1923,22 +1972,25 @@ async function generateNextBatch(projectId) {
             return;
         }
 
-        // 找到最后一个卷
-        const lastVolume = volumes[volumes.length - 1];
-        const existingChapters = await apiRequest(`/api/outline/${projectId}/volumes/${lastVolume.id}/chapters`);
-        const nextStartChapter = existingChapters.length + 1;
+        const selectedVolume = getSelectedBatchVolume() || (outlineVolumeProgressCache[0] || volumes[0]);
+        if (!selectedVolume) {
+            uiAlert('未找到可用卷，请先生成卷骨架。');
+            return;
+        }
+        const existingChapters = await apiRequest(`/api/outline/${projectId}/volumes/${selectedVolume.id}/chapters`);
         const totalChapters = parseInt(document.getElementById('totalChapters').value) || 50;
+        const nextStartChapter = getNextMissingChapterIndex(existingChapters, totalChapters);
 
-        if (existingChapters.length >= totalChapters) {
+        if (nextStartChapter > totalChapters) {
             uiAlert('本卷已经生成完所有章节了！');
             return;
         }
 
-        const remaining = totalChapters - existingChapters.length;
-        const batchEnd = Math.min(existingChapters.length + batchSize, totalChapters);
-        const batchCount = batchEnd - existingChapters.length;
+        const remaining = totalChapters - nextStartChapter + 1;
+        const batchEnd = Math.min(nextStartChapter + batchSize - 1, totalChapters);
+        const batchCount = batchEnd - nextStartChapter + 1;
 
-        if (!await uiConfirm(`确定要生成第 ${lastVolume.volume_index} 卷的第 ${nextStartChapter}-${batchEnd} 章吗？\n\n共 ${batchCount} 章，剩余 ${remaining - batchCount} 章。`)) return;
+        if (!await uiConfirm(`确定要生成第 ${selectedVolume.volume_index} 卷的第 ${nextStartChapter}-${batchEnd} 章吗？\n\n共 ${batchCount} 章，剩余 ${remaining - batchCount} 章。`)) return;
 
         const btn = document.getElementById('btnGenerateBatch');
         const oldHtml = btn.innerHTML;
@@ -1948,8 +2000,8 @@ async function generateNextBatch(projectId) {
             method: 'POST',
             body: JSON.stringify({
                 project_id: projectId,
-                volume_id: lastVolume.id,
-                volume_index: lastVolume.volume_index,
+                volume_id: selectedVolume.id,
+                volume_index: selectedVolume.volume_index,
                 start_chapter: nextStartChapter,
                 end_chapter: batchEnd,
                 total_chapters: totalChapters
@@ -1962,6 +2014,54 @@ async function generateNextBatch(projectId) {
         uiAlert('生成失败: ' + e.message);
     } finally {
         hideLoading(document.getElementById('btnGenerateBatch'), '2. 生成下一批章节');
+    }
+}
+
+async function generateAllRemainingChapters(projectId) {
+    try {
+        const volumes = await apiRequest(`/api/outline/${projectId}/volumes`);
+        if (volumes.length === 0) {
+            uiAlert('请先生成卷骨架！');
+            return;
+        }
+        const selectedVolume = getSelectedBatchVolume() || (outlineVolumeProgressCache[0] || volumes[0]);
+        if (!selectedVolume) {
+            uiAlert('未找到可用卷，请先生成卷骨架。');
+            return;
+        }
+        const existingChapters = await apiRequest(`/api/outline/${projectId}/volumes/${selectedVolume.id}/chapters`);
+        const totalChapters = parseInt(document.getElementById('totalChapters').value) || 50;
+        const nextStartChapter = getNextMissingChapterIndex(existingChapters, totalChapters);
+        if (nextStartChapter > totalChapters) {
+            uiAlert('本卷已经生成完所有章节了！');
+            return;
+        }
+
+        if (!await uiConfirm(`确定一键补齐第 ${selectedVolume.volume_index} 卷剩余章节吗？\n\n范围：第 ${nextStartChapter}-${totalChapters} 章\n后端会自动分批生成并合并。`)) return;
+
+        const btn = document.getElementById('btnGenerateAllRemaining');
+        const oldHtml = btn.innerHTML;
+        showLoading(btn, `正在生成第 ${nextStartChapter}-${totalChapters} 章...`);
+
+        const response = await apiRequest('/api/outline/generate-volume-chapters', {
+            method: 'POST',
+            body: JSON.stringify({
+                project_id: projectId,
+                volume_id: selectedVolume.id,
+                volume_index: selectedVolume.volume_index,
+                start_chapter: nextStartChapter,
+                end_chapter: totalChapters,
+                total_chapters: totalChapters
+            })
+        });
+
+        loadOutline(projectId);
+        uiAlert(response.message || `已完成第 ${nextStartChapter}-${totalChapters} 章生成。`);
+        hideLoading(btn, oldHtml);
+    } catch (e) {
+        uiAlert('一键补齐失败: ' + e.message);
+        const btn = document.getElementById('btnGenerateAllRemaining');
+        if (btn) hideLoading(btn, '3. 一键补齐本卷剩余章节');
     }
 }
 
@@ -2011,14 +2111,25 @@ async function loadOutline(projectId) {
         // 统计进度
         let totalChapters = 0;
         let doneChapters = 0;
+        const volumeProgressRows = [];
 
         let html = '';
         // 添加进度条
         for (const vol of volumes) {
             const chapters = await apiRequest(`/api/outline/${projectId}/volumes/${vol.id}/chapters`);
             totalChapters += chapters.length;
-            doneChapters += chapters.filter(c => c.is_generated).length;
+            const done = chapters.filter(c => c.is_generated).length;
+            doneChapters += done;
+            volumeProgressRows.push({
+                id: vol.id,
+                volume_index: Number(vol.volume_index) || 0,
+                title: vol.title || '',
+                total: chapters.length,
+                done
+            });
         }
+        outlineVolumeProgressCache = volumeProgressRows.sort((a, b) => (a.volume_index || 0) - (b.volume_index || 0));
+        refreshBatchVolumeSelector();
 
         if (totalChapters > 0) {
             const percent = Math.round((doneChapters / totalChapters) * 100);
@@ -2053,7 +2164,7 @@ async function loadOutline(projectId) {
                 const statusClass = chap.is_generated ? 'border-green-400 bg-green-50' : 'border-gray-200';
                 const actionBtn = chap.is_generated
                     ? `<button onclick="openChapter(${projectId}, ${chap.id})" class="px-2 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700 transition">查看/编辑</button>`
-                    : `<button onclick="generateChapter(${projectId}, ${chap.id}, this)" class="px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition">生成</button>`;
+                    : `<button onclick="generateChapter(${projectId}, ${chap.id}, this, ${Number(chap.target_words || 0)})" class="px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition">生成</button>`;
                 html += `
                     <div class="pl-3 border-l-2 ${statusClass} py-2 bg-white rounded">
                         <div class="flex justify-between items-center gap-2">
@@ -2101,7 +2212,7 @@ async function loadOutline(projectId) {
                     const statusClass = chap.is_generated ? 'border-green-400 bg-green-50' : 'border-gray-200';
                     const statusText = chap.is_generated
                         ? `<button onclick="openChapter(${projectId}, ${chap.id})" class="px-2 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700 transition">查看/编辑</button>`
-                        : `<button onclick="generateChapter(${projectId}, ${chap.id}, this)" class="px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition">生成</button>`;
+                        : `<button onclick="generateChapter(${projectId}, ${chap.id}, this, ${Number(chap.target_words || 0)})" class="px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition">生成</button>`;
 
                     html += `
                         <div class="pl-3 border-l-2 ${statusClass} py-2">
@@ -2139,8 +2250,62 @@ function toggleVolume(volumeId) {
     }
 }
 
+function getNextMissingChapterIndex(existingChapters, totalChapters) {
+    const used = new Set((existingChapters || [])
+        .map(c => parseInt(c.chapter_index || 0, 10))
+        .filter(n => Number.isFinite(n) && n > 0));
+    for (let i = 1; i <= totalChapters; i++) {
+        if (!used.has(i)) return i;
+    }
+    return totalChapters + 1;
+}
+
+function getSelectedBatchVolume() {
+    const select = document.getElementById('batchTargetVolume');
+    if (!select) return null;
+    const vid = parseInt(select.value || '0', 10);
+    if (!Number.isFinite(vid) || vid <= 0) return null;
+    return (outlineVolumeProgressCache || []).find(v => Number(v.id) === vid) || null;
+}
+
+function refreshBatchVolumeSelector() {
+    const select = document.getElementById('batchTargetVolume');
+    if (!select) return;
+    const rows = outlineVolumeProgressCache || [];
+    if (!rows.length) {
+        select.innerHTML = '<option value="">暂无卷</option>';
+        return;
+    }
+    let html = '';
+    rows.forEach(v => {
+        const label = `第${v.volume_index}卷：${v.title || '未命名卷'}（${v.done}/${v.total}已生成）`;
+        html += `<option value="${v.id}">${escapeHtml(label)}</option>`;
+    });
+    select.innerHTML = html;
+    const firstUnfinished = rows.find(v => v.done < v.total) || rows[0];
+    if (firstUnfinished) select.value = String(firstUnfinished.id);
+}
+
 // ========== 章节生成 ==========
-async function generateChapter(projectId, chapterId, btnEl = null) {
+function parseTargetWordsFromReference(refValue, fallback = 2000) {
+    const fb = Number.isFinite(Number(fallback)) ? Number(fallback) : 2000;
+    const txt = String(refValue || '').trim();
+    if (!txt) return fb;
+    const norm = txt.replace(/[,，]/g, '');
+    const rangeMatch = norm.match(/(\d{3,6})\s*[-~～至到]\s*(\d{3,6})/);
+    if (rangeMatch) {
+        const a = parseInt(rangeMatch[1], 10);
+        const b = parseInt(rangeMatch[2], 10);
+        if (Number.isFinite(a) && Number.isFinite(b)) {
+            return Math.round((Math.min(a, b) + Math.max(a, b)) / 2);
+        }
+    }
+    const singleMatch = norm.match(/(\d{3,6})/);
+    if (singleMatch) return parseInt(singleMatch[1], 10);
+    return fb;
+}
+
+async function generateChapter(projectId, chapterId, btnEl = null, targetWordsHint = 0) {
     if (!await uiConfirm('确定要生成这一章吗？')) return;
 
     try {
@@ -2152,7 +2317,10 @@ async function generateChapter(projectId, chapterId, btnEl = null) {
             method: 'POST',
             body: JSON.stringify({
                 project_id: projectId,
-                chapter_id: chapterId
+                chapter_id: chapterId,
+                target_words: (Number.isFinite(Number(targetWordsHint)) && Number(targetWordsHint) > 0)
+                    ? Number(targetWordsHint)
+                    : null
             })
         });
         uiAlert('生成成功！');
@@ -2169,6 +2337,11 @@ function openChapter(projectId, chapterId) {
     currentChapter = chapterId;
     apiRequest(`/api/write/chapter/${chapterId}`)
         .then(chapter => {
+            const fallbackTarget = (currentProject && currentProject.target_words_per_chapter) ? Number(currentProject.target_words_per_chapter) : 2000;
+            const resolvedTargetWords = (chapter.target_words && Number(chapter.target_words) > 0)
+                ? Number(chapter.target_words)
+                : parseTargetWordsFromReference(chapter.word_count_reference, fallbackTarget);
+
             const modal = document.createElement('div');
             modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
             modal.id = 'chapterModal';
@@ -2201,6 +2374,17 @@ function openChapter(projectId, chapterId) {
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">核心冲突</label>
                                 <input id="editChapterConflict" type="text" value="${escapeHtml(chapter.conflict || '')}" class="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3 mb-3">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">目标字数（强限制）</label>
+                                <input id="editChapterTargetWords" type="number" min="500" max="20000" step="100" value="${resolvedTargetWords}" class="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <div class="text-xs text-gray-500 mt-1">优先读取章节JSON字数参考；生成/重生时会强约束传给后端。</div>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">字数参考(JSON)</label>
+                                <input id="editChapterWordCountReference" type="text" value="${escapeHtml(chapter.word_count_reference || '')}" class="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="例如：3000-5000">
                             </div>
                         </div>
                         <div class="grid grid-cols-2 gap-3 mb-3">
@@ -2306,6 +2490,8 @@ async function saveChapter(projectId, chapterId) {
     const hook = document.getElementById('editChapterHook').value;
     const antagonist_level = document.getElementById('editChapterAntagonistLevel').value;
     const pov = document.getElementById('editChapterPov').value;
+    const target_words = parseInt(document.getElementById('editChapterTargetWords').value || '0', 10);
+    const word_count_reference = document.getElementById('editChapterWordCountReference').value;
 
     try {
         await apiRequest(`/api/outline/chapters/${chapterId}`, {
@@ -2322,6 +2508,9 @@ async function saveChapter(projectId, chapterId) {
                 hook: hook,
                 antagonist_level: antagonist_level,
                 pov: pov
+                ,
+                target_words: (Number.isFinite(target_words) && target_words > 0) ? target_words : null,
+                word_count_reference: word_count_reference
             })
         });
         uiAlert('保存成功！');
@@ -2494,16 +2683,19 @@ async function regenerateChapter(projectId, chapterId, btnEl = null) {
     const btn = btnEl;
     const oldHtml = btn ? btn.innerHTML : '';
     if (btn) showLoading(btn, '生成中...');
+    const target_words = parseInt((document.getElementById('editChapterTargetWords')?.value || '0'), 10);
 
     try {
         const chapter = await apiRequest(`/api/write/chapter/${chapterId}/regenerate`, {
             method: 'POST',
             body: JSON.stringify({
                 project_id: projectId,
-                user_prompt: userPrompt
+                user_prompt: userPrompt,
+                target_words: (Number.isFinite(target_words) && target_words > 0) ? target_words : null
             })
         });
         document.getElementById('editChapterContent').value = chapter.content;
+        document.getElementById('editChapterWordCount').textContent = `字数：${chapter.word_count || 0}`;
         uiAlert('重新生成成功！');
     } catch (e) {
         uiAlert('生成失败: ' + e.message);
@@ -3109,6 +3301,391 @@ let writeGeneratedItems = [];
 let writeCurrentPage = 1;
 const WRITE_PAGE_SIZE = 5;
 const writeExpanded = {};
+let writeVolumeProgressCache = [];
+let writeFailedQueue = [];
+let writeRetryContext = { projectId: null, volumeId: null, targetWords: null };
+
+function setWriteBatchButtonsDisabled(disabled) {
+    const ids = ['btnWriteBatchNext', 'btnWriteBatchAll', 'btnWriteRetryFailed'];
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !!disabled;
+    });
+}
+
+function resetWriteBatchProgress() {
+    const wrap = document.getElementById('writeBatchProgressWrap');
+    const text = document.getElementById('writeBatchProgressText');
+    const pct = document.getElementById('writeBatchProgressPercent');
+    const bar = document.getElementById('writeBatchProgressBar');
+    if (wrap) wrap.classList.add('hidden');
+    if (text) text.textContent = '准备中...';
+    if (pct) pct.textContent = '0%';
+    if (bar) bar.style.width = '0%';
+}
+
+function updateWriteBatchProgress(current, total, label = '') {
+    const wrap = document.getElementById('writeBatchProgressWrap');
+    const text = document.getElementById('writeBatchProgressText');
+    const pct = document.getElementById('writeBatchProgressPercent');
+    const bar = document.getElementById('writeBatchProgressBar');
+    if (wrap) wrap.classList.remove('hidden');
+    const safeTotal = Math.max(1, Number(total || 1));
+    const safeCurrent = Math.max(0, Math.min(safeTotal, Number(current || 0)));
+    const percent = Math.round((safeCurrent / safeTotal) * 100);
+    if (text) text.textContent = `${label || '批量生成'}：${safeCurrent}/${safeTotal}`;
+    if (pct) pct.textContent = `${percent}%`;
+    if (bar) bar.style.width = `${percent}%`;
+}
+
+function renderWriteFailedQueue() {
+    const box = document.getElementById('writeBatchFailedBox');
+    const list = document.getElementById('writeBatchFailedList');
+    if (!box || !list) return;
+    if (!writeFailedQueue.length) {
+        box.classList.add('hidden');
+        list.innerHTML = '';
+        return;
+    }
+    box.classList.remove('hidden');
+    list.innerHTML = writeFailedQueue.map(item => {
+        const idx = Number(item.chapter_index || 0);
+        const title = item.title || '';
+        const err = String(item.error || '未知错误');
+        return `<div>第${idx}章 ${escapeHtml(title)}：${escapeHtml(err)}</div>`;
+    }).join('');
+}
+
+async function requestGenerateChapter(projectId, chapterId, targetWords = null) {
+    return apiRequest('/api/write/chapter', {
+        method: 'POST',
+        body: JSON.stringify({
+            project_id: projectId,
+            chapter_id: chapterId,
+            target_words: (Number.isFinite(Number(targetWords)) && Number(targetWords) > 0)
+                ? Number(targetWords)
+                : null
+        })
+    });
+}
+
+function getSelectedWriteBatchVolume() {
+    const select = document.getElementById('writeBatchVolume');
+    if (!select) return null;
+    const vid = parseInt(select.value || '0', 10);
+    if (!Number.isFinite(vid) || vid <= 0) return null;
+    return (writeVolumeProgressCache || []).find(v => Number(v.id) === vid) || null;
+}
+
+function clampWriteBatchSize(v) {
+    const n = parseInt(String(v || '5'), 10);
+    if (!Number.isFinite(n)) return 5;
+    return Math.max(1, Math.min(10, n));
+}
+
+function getWriteBatchTargetWords() {
+    const input = document.getElementById('writeBatchTargetWords');
+    if (!input) return null;
+    const val = parseInt(String(input.value || '0'), 10);
+    return (Number.isFinite(val) && val > 0) ? Math.max(500, Math.min(20000, val)) : null;
+}
+
+function renderWriteBatchPendingInfo() {
+    const infoEl = document.getElementById('writeBatchPendingInfo');
+    if (!infoEl) return;
+    const row = getSelectedWriteBatchVolume();
+    if (!row) {
+        infoEl.textContent = '暂无可用卷。';
+        return;
+    }
+    const batchSize = clampWriteBatchSize(document.getElementById('writeBatchSize')?.value || 5);
+    const pending = Math.max(0, Number(row.total || 0) - Number(row.done || 0));
+    if (pending <= 0 || row.next_start === null || row.next_start === undefined) {
+        infoEl.textContent = `第${row.volume_index}卷正文已完成（${row.done}/${row.total}）。`;
+        return;
+    }
+    const end = Math.min(Number(row.next_start) + batchSize - 1, Number(row.max_index || row.total || row.next_start));
+    infoEl.textContent = `第${row.volume_index}卷待生成 ${pending} 章，本批建议范围：第${row.next_start}-${end}章。`;
+}
+
+async function loadWriteBatchPanel(projectId) {
+    try {
+        const select = document.getElementById('writeBatchVolume');
+        if (!select) return;
+
+        const volumes = await apiRequest(`/api/outline/${projectId}/volumes`);
+        if (!volumes.length) {
+            writeVolumeProgressCache = [];
+            select.innerHTML = '<option value="">暂无卷（请先生成卷纲）</option>';
+            renderWriteBatchPendingInfo();
+            return;
+        }
+
+        const rows = [];
+        for (const vol of volumes) {
+            const chapters = await apiRequest(`/api/outline/${projectId}/volumes/${vol.id}/chapters`);
+            const sorted = (chapters || []).slice().sort((a, b) => (a.chapter_index || 0) - (b.chapter_index || 0));
+            const total = sorted.length;
+            const done = sorted.filter(c => c.is_generated).length;
+            const nextPending = sorted.find(c => !c.is_generated);
+            const maxIndex = sorted.reduce((mx, c) => Math.max(mx, Number(c.chapter_index || 0)), 0);
+            rows.push({
+                id: vol.id,
+                volume_index: Number(vol.volume_index) || 0,
+                title: vol.title || '',
+                total,
+                done,
+                next_start: nextPending ? Number(nextPending.chapter_index || 0) : null,
+                max_index: maxIndex
+            });
+        }
+
+        writeVolumeProgressCache = rows.sort((a, b) => (a.volume_index || 0) - (b.volume_index || 0));
+
+        select.innerHTML = writeVolumeProgressCache.map(v => {
+            const label = `第${v.volume_index}卷：${v.title || '未命名卷'}（${v.done}/${v.total}已生成）`;
+            return `<option value="${v.id}">${escapeHtml(label)}</option>`;
+        }).join('');
+
+        const unfinished = writeVolumeProgressCache.find(v => Number(v.done) < Number(v.total));
+        select.value = String((unfinished || writeVolumeProgressCache[0]).id);
+        select.onchange = () => renderWriteBatchPendingInfo();
+
+        const batchInput = document.getElementById('writeBatchSize');
+        if (batchInput) {
+            batchInput.onchange = () => {
+                batchInput.value = String(clampWriteBatchSize(batchInput.value));
+                renderWriteBatchPendingInfo();
+            };
+        }
+
+        renderWriteBatchPendingInfo();
+    } catch (e) {
+        console.error('加载正文批量面板失败', e);
+    }
+}
+
+async function generateWriteNextBatch(projectId) {
+    const btn = document.getElementById('btnWriteBatchNext');
+    const oldHtml = btn ? btn.innerHTML : '';
+    try {
+        const selected = getSelectedWriteBatchVolume();
+        if (!selected) {
+            await uiAlert('请先选择目标卷');
+            return;
+        }
+
+        const chapters = await apiRequest(`/api/outline/${projectId}/volumes/${selected.id}/chapters`);
+        const sorted = (chapters || []).slice().sort((a, b) => (a.chapter_index || 0) - (b.chapter_index || 0));
+        const pending = sorted.filter(c => !c.is_generated);
+        if (!pending.length) {
+            await uiAlert(`第${selected.volume_index}卷正文已经全部生成完成。`);
+            await loadWriteBatchPanel(projectId);
+            return;
+        }
+
+        const batchSize = clampWriteBatchSize(document.getElementById('writeBatchSize')?.value || 5);
+        const targets = pending.slice(0, batchSize);
+        const start = Number(targets[0]?.chapter_index || 1);
+        const end = Number(targets[targets.length - 1]?.chapter_index || start);
+        const rangePendingCount = targets.length;
+        const afterPending = Math.max(0, pending.length - rangePendingCount);
+        const targetWords = getWriteBatchTargetWords();
+
+        const ok = await uiConfirm(
+            `确定生成第${selected.volume_index}卷第${start}-${end}章正文吗？\n\n本批预计生成 ${rangePendingCount} 章，完成后剩余 ${afterPending} 章。`
+        );
+        if (!ok) return;
+
+        if (btn) showLoading(btn, `生成中（第${start}-${end}章）...`);
+        setWriteBatchButtonsDisabled(true);
+        writeFailedQueue = [];
+        writeRetryContext = { projectId, volumeId: selected.id, targetWords };
+        renderWriteFailedQueue();
+        updateWriteBatchProgress(0, targets.length, `第${selected.volume_index}卷批量正文`);
+        const resultEl = document.getElementById('writeBatchResult');
+        if (resultEl) resultEl.textContent = '开始按章生成...';
+
+        let successCount = 0;
+        for (let i = 0; i < targets.length; i++) {
+            const t = targets[i];
+            const tw = (Number.isFinite(Number(targetWords)) && Number(targetWords) > 0)
+                ? Number(targetWords)
+                : ((Number.isFinite(Number(t.target_words)) && Number(t.target_words) > 0) ? Number(t.target_words) : null);
+            try {
+                await requestGenerateChapter(projectId, t.id, tw);
+                successCount += 1;
+            } catch (e) {
+                writeFailedQueue.push({
+                    chapter_id: t.id,
+                    chapter_index: t.chapter_index,
+                    title: t.title || '',
+                    target_words: tw,
+                    error: e.message || '生成失败'
+                });
+            }
+            updateWriteBatchProgress(i + 1, targets.length, `第${selected.volume_index}卷批量正文`);
+        }
+
+        if (resultEl) resultEl.textContent = `本批完成：成功 ${successCount} 章，失败 ${writeFailedQueue.length} 章。`;
+        renderWriteFailedQueue();
+        if (writeFailedQueue.length) {
+            await uiAlert(`本批生成完成：成功 ${successCount} 章，失败 ${writeFailedQueue.length} 章。可点击“重试失败章节”。`);
+        } else {
+            await uiAlert(`本批生成完成：成功 ${successCount} 章。`);
+        }
+        await loadWriteBatchPanel(projectId);
+        await loadGeneratedChapters(projectId);
+        await loadOutline(projectId);
+    } catch (e) {
+        await uiAlert('批量生成失败: ' + e.message);
+    } finally {
+        setWriteBatchButtonsDisabled(false);
+        if (btn) hideLoading(btn, oldHtml || '生成下一批正文');
+    }
+}
+
+async function generateWriteAllRemaining(projectId) {
+    const btn = document.getElementById('btnWriteBatchAll');
+    const oldHtml = btn ? btn.innerHTML : '';
+    try {
+        const selected = getSelectedWriteBatchVolume();
+        if (!selected) {
+            await uiAlert('请先选择目标卷');
+            return;
+        }
+
+        const chapters = await apiRequest(`/api/outline/${projectId}/volumes/${selected.id}/chapters`);
+        const sorted = (chapters || []).slice().sort((a, b) => (a.chapter_index || 0) - (b.chapter_index || 0));
+        const pending = sorted.filter(c => !c.is_generated);
+        if (!pending.length) {
+            await uiAlert(`第${selected.volume_index}卷正文已经全部生成完成。`);
+            await loadWriteBatchPanel(projectId);
+            return;
+        }
+
+        const start = Number(pending[0].chapter_index || 1);
+        const end = Number(pending[pending.length - 1]?.chapter_index || start);
+        const batchSize = clampWriteBatchSize(document.getElementById('writeBatchSize')?.value || 5);
+        const targetWords = getWriteBatchTargetWords();
+        const ok = await uiConfirm(
+            `确定一键补齐第${selected.volume_index}卷剩余正文吗？\n\n范围：第${start}-${end}章，共 ${pending.length} 章。\n系统会按每批 ${batchSize} 章顺序生成。`
+        );
+        if (!ok) return;
+
+        if (btn) showLoading(btn, '补齐中，请稍候...');
+        setWriteBatchButtonsDisabled(true);
+        writeFailedQueue = [];
+        writeRetryContext = { projectId, volumeId: selected.id, targetWords };
+        renderWriteFailedQueue();
+        updateWriteBatchProgress(0, pending.length, `第${selected.volume_index}卷补齐正文`);
+        const resultEl = document.getElementById('writeBatchResult');
+        if (resultEl) resultEl.textContent = '开始按章补齐...';
+
+        let successCount = 0;
+        for (let i = 0; i < pending.length; i++) {
+            const t = pending[i];
+            const tw = (Number.isFinite(Number(targetWords)) && Number(targetWords) > 0)
+                ? Number(targetWords)
+                : ((Number.isFinite(Number(t.target_words)) && Number(t.target_words) > 0) ? Number(t.target_words) : null);
+            try {
+                await requestGenerateChapter(projectId, t.id, tw);
+                successCount += 1;
+            } catch (e) {
+                writeFailedQueue.push({
+                    chapter_id: t.id,
+                    chapter_index: t.chapter_index,
+                    title: t.title || '',
+                    target_words: tw,
+                    error: e.message || '生成失败'
+                });
+            }
+            updateWriteBatchProgress(i + 1, pending.length, `第${selected.volume_index}卷补齐正文`);
+        }
+
+        if (resultEl) resultEl.textContent = `补齐完成：成功 ${successCount} 章，失败 ${writeFailedQueue.length} 章。`;
+        renderWriteFailedQueue();
+        if (writeFailedQueue.length) {
+            await uiAlert(`补齐完成：成功 ${successCount} 章，失败 ${writeFailedQueue.length} 章。可点击“重试失败章节”。`);
+        } else {
+            await uiAlert(`补齐完成：成功 ${successCount} 章。`);
+        }
+        await loadWriteBatchPanel(projectId);
+        await loadGeneratedChapters(projectId);
+        await loadOutline(projectId);
+    } catch (e) {
+        await uiAlert('一键补齐失败: ' + e.message);
+    } finally {
+        setWriteBatchButtonsDisabled(false);
+        if (btn) hideLoading(btn, oldHtml || '一键补齐本卷剩余正文');
+    }
+}
+
+async function retryWriteFailedChapters() {
+    if (!writeFailedQueue.length) {
+        await uiAlert('当前没有失败章节需要重试。');
+        return;
+    }
+    const projectId = Number(writeRetryContext.projectId || (currentProject && currentProject.id));
+    if (!projectId) {
+        await uiAlert('缺少项目信息，无法重试。');
+        return;
+    }
+    const queue = writeFailedQueue.slice();
+    const ok = await uiConfirm(`确定重试失败章节吗？共 ${queue.length} 章。`);
+    if (!ok) return;
+
+    const btn = document.getElementById('btnWriteRetryFailed');
+    const oldHtml = btn ? btn.innerHTML : '';
+    try {
+        if (btn) showLoading(btn, '重试中...');
+        setWriteBatchButtonsDisabled(true);
+        writeFailedQueue = [];
+        renderWriteFailedQueue();
+        updateWriteBatchProgress(0, queue.length, '重试失败章节');
+        const resultEl = document.getElementById('writeBatchResult');
+        if (resultEl) resultEl.textContent = '开始重试失败章节...';
+
+        let successCount = 0;
+        for (let i = 0; i < queue.length; i++) {
+            const t = queue[i];
+            const tw = (Number.isFinite(Number(t.target_words)) && Number(t.target_words) > 0)
+                ? Number(t.target_words)
+                : ((Number.isFinite(Number(writeRetryContext.targetWords)) && Number(writeRetryContext.targetWords) > 0)
+                    ? Number(writeRetryContext.targetWords)
+                    : null);
+            try {
+                await requestGenerateChapter(projectId, t.chapter_id, tw);
+                successCount += 1;
+            } catch (e) {
+                writeFailedQueue.push({
+                    chapter_id: t.chapter_id,
+                    chapter_index: t.chapter_index,
+                    title: t.title || '',
+                    target_words: tw,
+                    error: e.message || '生成失败'
+                });
+            }
+            updateWriteBatchProgress(i + 1, queue.length, '重试失败章节');
+        }
+
+        if (resultEl) resultEl.textContent = `重试完成：成功 ${successCount} 章，失败 ${writeFailedQueue.length} 章。`;
+        renderWriteFailedQueue();
+        if (writeFailedQueue.length) {
+            await uiAlert(`重试完成：成功 ${successCount} 章，仍失败 ${writeFailedQueue.length} 章。`);
+        } else {
+            await uiAlert(`重试完成：全部成功（${successCount}章）。`);
+        }
+        await loadWriteBatchPanel(projectId);
+        await loadGeneratedChapters(projectId);
+        await loadOutline(projectId);
+    } catch (e) {
+        await uiAlert('重试失败: ' + e.message);
+    } finally {
+        setWriteBatchButtonsDisabled(false);
+        if (btn) hideLoading(btn, oldHtml || '重试失败章节');
+    }
+}
 
 async function loadGeneratedChapters(projectId) {
     try {

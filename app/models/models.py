@@ -120,6 +120,8 @@ class Chapter(Base):
     hook = Column(Text)  # 本章钩子
     antagonist_level = Column(String(20))  # 反派层级：小/中/大
     pov = Column(String(50))  # 视角主角
+    target_words = Column(Integer)  # 本章目标字数（强约束优先）
+    word_count_reference = Column(String(80))  # 原始字数参考（如 3000-5000）
 
     outline = Column(Text)  # 本章综合大纲
     content = Column(Text)  # 正文

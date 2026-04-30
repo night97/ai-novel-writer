@@ -5,12 +5,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 
-from app.database import engine, Base, SessionLocal
+from app.database import engine, Base, SessionLocal, ensure_runtime_schema
 from app.routes import projects, characters, outline, write, settings, workbench
 from app.routes.settings import sync_llm_runtime_with_active_profile
 
 # 创建数据库表
 Base.metadata.create_all(bind=engine)
+ensure_runtime_schema()
 
 load_dotenv()
 

@@ -98,6 +98,16 @@ class VolumeResponse(VolumeCreate):
 
 class ChapterCreate(BaseModel):
     title: Optional[str] = None
+    goal: Optional[str] = None
+    conflict: Optional[str] = None
+    cost: Optional[str] = None
+    strand: Optional[str] = None
+    cool_point_type: Optional[str] = None
+    hook: Optional[str] = None
+    antagonist_level: Optional[str] = None
+    pov: Optional[str] = None
+    target_words: Optional[int] = None
+    word_count_reference: Optional[str] = None
     outline: Optional[str] = None
     chapter_index: int
     volume_id: int
@@ -123,11 +133,13 @@ class GenerateOutlineRequest(BaseModel):
 class GenerateChapterRequest(BaseModel):
     project_id: int
     chapter_id: int
+    target_words: Optional[int] = None
 
 class RegenerateChapterRequest(BaseModel):
     project_id: int
     chapter_id: Optional[int] = None
     user_prompt: str = ""
+    target_words: Optional[int] = None
 
 class GenerateRequest(BaseModel):
     prompt: str

@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Set
 from app.database import get_db
 import json
+import re
 from app.models.models import NovelProject, WorldSetting, Character, Chapter, Volume, CharacterRelationship, ProjectCreativeProfile, AppConfig
 from app.models.schemas import ChapterResponse, GenerateChapterRequest, RegenerateChapterRequest
 from app.services.llm_service import llm_service
@@ -88,6 +89,171 @@ def _build_character_task_cards(chapter: Chapter, active_characters: List[Charac
             f"- {c.name}｜任务类型:{mission_type}｜本章必须完成:{mission}｜完成信号:引发明确后果或关系变化"
         )
     return "\n".join(cards)
+
+
+def _parse_target_words_from_reference(word_ref: str, fallback: int) -> int:
+    txt = str(word_ref or "").strip()
+    if not txt:
+        return fallback
+    norm = txt.replace(",", "").replace("，", "")
+    m = re.search(r"(\d{3,6})\s*[-~～至到]\s*(\d{3,6})", norm)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > b:
+            a, b = b, a
+        return int(round((a + b) / 2))
+    m2 = re.search(r"(\d{3,6})", norm)
+    if m2:
+        return int(m2.group(1))
+    return fallback
+
+
+def _resolve_target_words(project: NovelProject, chapter: Chapter, request_target_words: int | None) -> int:
+    """目标字数优先级：请求参数 > 章节配置 > 项目默认"""
+    default_words = int(project.target_words_per_chapter or 2000)
+
+    if request_target_words and int(request_target_words) > 0:
+        val = int(request_target_words)
+    elif chapter.target_words and int(chapter.target_words) > 0:
+        val = int(chapter.target_words)
+    elif chapter.word_count_reference:
+        val = _parse_target_words_from_reference(chapter.word_count_reference, default_words)
+    else:
+        val = default_words
+
+    return max(500, min(20000, val))
+
+
+def _hard_clip_content_to_target(content: str, target_words: int) -> str:
+    """最终兜底：强制不超过目标上限（避免模型不听字数约束）"""
+    text = (content or "").strip()
+    if not text:
+        return text
+    target = max(500, min(20000, int(target_words or 2000)))
+    # 强限制：最终正文尽量收敛到目标值附近（默认不超过 +3%）
+    high = max(target + 30, int(target * 1.03))
+    if len(text) <= high:
+        return text
+
+    cut = text[:high]
+    # 优先按句号边界截断，避免生硬切字
+    boundary_chars = ["。", "！", "？", ".", "!", "?", "；", ";", "\n"]
+    pos = max(cut.rfind(ch) for ch in boundary_chars)
+    if pos >= int(high * 0.7):
+        cut = cut[:pos + 1]
+    return cut.strip()
+
+
+def _build_recent_chapter_context(db: Session, project_id: int, chapter: Chapter, lookback: int = 2, tail_chars: int = 900) -> str:
+    """
+    连续性兜底：强制注入同卷前几章的关键信息，避免跨批次生成割裂。
+    优先使用“上一章概要 + 正文结尾片段”。
+    """
+    if not chapter or not chapter.volume_id or not chapter.chapter_index:
+        return ""
+
+    prev_rows = db.query(Chapter)\
+        .filter(Chapter.project_id == project_id)\
+        .filter(Chapter.volume_id == chapter.volume_id)\
+        .filter(Chapter.chapter_index < chapter.chapter_index)\
+        .filter(Chapter.is_generated == True)\
+        .order_by(Chapter.chapter_index.desc())\
+        .limit(max(1, lookback))\
+        .all()
+
+    if not prev_rows:
+        return ""
+
+    prev_rows = list(reversed(prev_rows))
+    blocks = []
+    for p in prev_rows:
+        outline = (p.outline or "").strip()
+        if len(outline) > 260:
+            outline = outline[:260] + "..."
+        ending = (p.content or "").strip()
+        if len(ending) > tail_chars:
+            ending = ending[-tail_chars:]
+        ending = ending.strip()
+        if not ending and not outline:
+            continue
+        blocks.append(
+            f"第{p.chapter_index}章《{p.title or ''}》\n"
+            f"- 章节概要: {outline or '（无）'}\n"
+            f"- 结尾片段: {ending or '（无）'}"
+        )
+
+    return "\n\n".join(blocks).strip()
+
+
+def _generate_and_save_chapter(
+    db: Session,
+    project: NovelProject,
+    chapter: Chapter,
+    project_id: int,
+    target_words: int,
+    append_user_prompt: str = "",
+    extract_entities: bool = True
+) -> Chapter:
+    # 如果有用户提示，附加到章节大纲
+    if append_user_prompt and append_user_prompt.strip():
+        chapter.outline = (chapter.outline or "") + "\n\n用户修改要求: " + append_user_prompt.strip()
+
+    # 获取RAG上下文 - 用本章大纲作为query搜索相关历史（失败时降级）
+    try:
+        rag_context = rag_service.get_relevant_context(db, project_id, chapter.outline or "")
+    except Exception as e:
+        print(f"RAG检索失败，降级为无上下文继续生成: {e}")
+        rag_context = ""
+
+    sequential_context = _build_recent_chapter_context(db, project_id, chapter, lookback=2, tail_chars=900)
+    context_parts: List[str] = []
+    if sequential_context:
+        context_parts.append(f"【连续剧情上下文（同卷最近章节）】\n{sequential_context}")
+    if rag_context:
+        context_parts.append(f"【检索上下文】\n{rag_context}")
+    context = "\n\n".join(context_parts).strip()
+
+    project_info = get_project_info(project, db, chapter=chapter, volume_id=chapter.volume_id)
+    chapter_dict = {
+        "chapter_index": chapter.chapter_index,
+        "title": chapter.title,
+        "goal": chapter.goal,
+        "conflict": chapter.conflict,
+        "cost": chapter.cost,
+        "strand": chapter.strand,
+        "cool_point_type": chapter.cool_point_type,
+        "hook": chapter.hook,
+        "antagonist_level": chapter.antagonist_level,
+        "pov": chapter.pov,
+        "target_words": target_words,
+        "word_count_reference": chapter.word_count_reference,
+        "outline": chapter.outline
+    }
+
+    content = llm_service.generate_chapter_with_pipeline(
+        project_info=project_info,
+        chapter=chapter_dict,
+        context=context,
+        target_words=target_words,
+        chapter_index=chapter.chapter_index
+    )
+
+    content = _hard_clip_content_to_target(content, target_words)
+    chapter.target_words = target_words
+    chapter.content = content
+    chapter.word_count = len(content)
+    chapter.is_generated = True
+
+    try:
+        rag_service.index_chapter(db, project_id, chapter.id, content)
+        if extract_entities:
+            rag_service.extract_entities(db, project_id, chapter.id, content, llm_service)
+    except Exception as e:
+        print(f"构建RAG索引失败: {e}")
+
+    db.commit()
+    db.refresh(chapter)
+    return chapter
 
 
 def get_project_info(project, db, chapter: Chapter = None, volume_id=None):
@@ -198,57 +364,23 @@ def generate_chapter(request: GenerateChapterRequest, db: Session = Depends(get_
     # 强制同步运行时模型配置，避免“页面配置”和“实际调用”不一致
     sync_llm_runtime_with_active_profile(db)
 
-    # 获取RAG上下文 - 用本章大纲作为query搜索相关历史（失败时降级）
+    target_words = _resolve_target_words(project, chapter, request.target_words)
     try:
-        context = rag_service.get_relevant_context(db, request.project_id, chapter.outline)
-    except Exception as e:
-        print(f"RAG检索失败，降级为无上下文继续生成: {e}")
-        context = ""
-
-    # 获取项目完整信息（包含本卷骨架信息）
-    project_info = get_project_info(project, db, chapter=chapter, volume_id=chapter.volume_id)
-
-    # 生成正文 - 传递完整章节信息
-    chapter_dict = {
-        "chapter_index": chapter.chapter_index,
-        "title": chapter.title,
-        "goal": chapter.goal,
-        "conflict": chapter.conflict,
-        "cost": chapter.cost,
-        "strand": chapter.strand,
-        "cool_point_type": chapter.cool_point_type,
-        "hook": chapter.hook,
-        "antagonist_level": chapter.antagonist_level,
-        "pov": chapter.pov,
-        "outline": chapter.outline
-    }
-    try:
-        content = llm_service.generate_chapter_with_pipeline(
-            project_info=project_info,
-            chapter=chapter_dict,
-            context=context,
-            target_words=project.target_words_per_chapter,
-            chapter_index=chapter.chapter_index
+        chapter = _generate_and_save_chapter(
+            db=db,
+            project=project,
+            chapter=chapter,
+            project_id=request.project_id,
+            target_words=target_words,
+            append_user_prompt="",
+            extract_entities=True
         )
     except APITimeoutError:
         raise HTTPException(status_code=504, detail="模型请求超时：请降低每章字数、切换更快模型，或稍后重试")
     except APIConnectionError:
         raise HTTPException(status_code=502, detail="模型连接失败：请检查 base_url、网络连通性或切换模型来源")
 
-    # 保存
-    chapter.content = content
-    chapter.word_count = len(content)
-    chapter.is_generated = True
-
-    # 构建RAG索引
-    try:
-        rag_service.index_chapter(db, request.project_id, request.chapter_id, content)
-        rag_service.extract_entities(db, request.project_id, request.chapter_id, content, llm_service)
-    except Exception as e:
-        print(f"构建RAG索引失败: {e}")
-
-    db.commit()
-    db.refresh(chapter)
+    print(f"[WORD_LIMIT] chapter_id={chapter.id} target={target_words} final={chapter.word_count}")
     return chapter
 
 @router.post("/chapter/{chapter_id}/regenerate", response_model=ChapterResponse)
@@ -264,55 +396,113 @@ def regenerate_chapter(chapter_id: int, request: RegenerateChapterRequest, db: S
 
     sync_llm_runtime_with_active_profile(db)
 
-    # 如果有用户提示，修改大纲
-    if request.user_prompt and request.user_prompt.strip():
-        chapter.outline = chapter.outline + "\n\n用户修改要求: " + request.user_prompt
-
-    # 获取RAG上下文 - 用本章大纲作为query搜索相关历史（失败时降级）
-    try:
-        context = rag_service.get_relevant_context(db, request.project_id, chapter.outline)
-    except Exception as e:
-        print(f"RAG检索失败，降级为无上下文继续生成: {e}")
-        context = ""
-
-    # 获取项目完整信息（包含本卷骨架信息）
-    project_info = get_project_info(project, db, chapter=chapter, volume_id=chapter.volume_id)
-
-    # 生成正文 - 传递完整章节信息
-    chapter_dict = {
-        "chapter_index": chapter.chapter_index,
-        "title": chapter.title,
-        "goal": chapter.goal,
-        "conflict": chapter.conflict,
-        "cost": chapter.cost,
-        "strand": chapter.strand,
-        "cool_point_type": chapter.cool_point_type,
-        "hook": chapter.hook,
-        "antagonist_level": chapter.antagonist_level,
-        "pov": chapter.pov,
-        "outline": chapter.outline
-    }
-    content = llm_service.generate_chapter_with_pipeline(
-        project_info=project_info,
-        chapter=chapter_dict,
-        context=context,
-        target_words=project.target_words_per_chapter,
-        chapter_index=chapter.chapter_index
+    target_words = _resolve_target_words(project, chapter, request.target_words)
+    chapter = _generate_and_save_chapter(
+        db=db,
+        project=project,
+        chapter=chapter,
+        project_id=request.project_id,
+        target_words=target_words,
+        append_user_prompt=request.user_prompt or "",
+        extract_entities=False
     )
-
-    chapter.content = content
-    chapter.word_count = len(content)
-    chapter.is_generated = True
-
-    # 重新构建RAG索引
-    try:
-        rag_service.index_chapter(db, request.project_id, chapter_id, content)
-    except Exception as e:
-        print(f"构建RAG索引失败: {e}")
-
-    db.commit()
-    db.refresh(chapter)
+    print(f"[WORD_LIMIT] regenerate chapter_id={chapter.id} target={target_words} final={chapter.word_count}")
     return chapter
+
+
+class BatchGenerateChaptersRequest(BaseModel):
+    project_id: int
+    volume_id: int
+    start_chapter: int | None = None
+    end_chapter: int | None = None
+    batch_size: int = 5
+    target_words: int | None = None
+    regenerate_existing: bool = False
+
+
+@router.post("/batch-generate")
+def batch_generate_chapters(request: BatchGenerateChaptersRequest, db: Session = Depends(get_db)):
+    """批量顺序生成正文：逐章入库，保证上下文连续；下一批可继承前批内容"""
+    project = db.query(NovelProject).filter(NovelProject.id == request.project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    volume = db.query(Volume).filter(Volume.id == request.volume_id).first()
+    if not volume or volume.project_id != request.project_id:
+        raise HTTPException(status_code=404, detail="卷不存在或不属于该项目")
+
+    sync_llm_runtime_with_active_profile(db)
+
+    all_chapters = db.query(Chapter)\
+        .filter(Chapter.project_id == request.project_id)\
+        .filter(Chapter.volume_id == request.volume_id)\
+        .order_by(Chapter.chapter_index)\
+        .all()
+    if not all_chapters:
+        raise HTTPException(status_code=400, detail="该卷下没有章节，请先生成章节大纲")
+
+    max_idx = max(c.chapter_index for c in all_chapters if c.chapter_index is not None)
+    start_idx = int(request.start_chapter or 1)
+    end_idx = int(request.end_chapter or max_idx)
+    if start_idx < 1:
+        start_idx = 1
+    if end_idx > max_idx:
+        end_idx = max_idx
+    if end_idx < start_idx:
+        raise HTTPException(status_code=400, detail="章节范围非法：end_chapter 不能小于 start_chapter")
+
+    chapters = [c for c in all_chapters if start_idx <= int(c.chapter_index or 0) <= end_idx]
+    if not request.regenerate_existing:
+        chapters = [c for c in chapters if not c.is_generated]
+
+    if not chapters:
+        return {
+            "success": True,
+            "message": "所选范围内没有需要生成的章节",
+            "generated_count": 0,
+            "failed_count": 0,
+            "generated_chapter_ids": [],
+            "failed": []
+        }
+
+    # 推荐每批 5 章：兼顾稳定性/速度/连续性
+    batch_size = max(1, min(10, int(request.batch_size or 5)))
+    generated_ids: List[int] = []
+    failed = []
+
+    for i in range(0, len(chapters), batch_size):
+        chunk = chapters[i:i + batch_size]
+        for ch in chunk:
+            target_words = _resolve_target_words(project, ch, request.target_words)
+            try:
+                _generate_and_save_chapter(
+                    db=db,
+                    project=project,
+                    chapter=ch,
+                    project_id=request.project_id,
+                    target_words=target_words,
+                    append_user_prompt="",
+                    extract_entities=False  # 批量模式优先速度；RAG索引已构建，跨批可连贯
+                )
+                generated_ids.append(ch.id)
+            except Exception as e:
+                db.rollback()
+                failed.append({
+                    "chapter_id": ch.id,
+                    "chapter_index": ch.chapter_index,
+                    "title": ch.title,
+                    "error": str(e)[:300]
+                })
+
+    return {
+        "success": len(generated_ids) > 0,
+        "message": f"批量生成完成：成功 {len(generated_ids)} 章，失败 {len(failed)} 章",
+        "generated_count": len(generated_ids),
+        "failed_count": len(failed),
+        "generated_chapter_ids": generated_ids,
+        "failed": failed,
+        "recommended_batch_size": 5
+    }
 
 @router.get("/chapter/{chapter_id}", response_model=ChapterResponse)
 def get_chapter(chapter_id: int, db: Session = Depends(get_db)):

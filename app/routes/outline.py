@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Dict
 from app.database import get_db
 from app.models.models import NovelProject, WorldSetting, Character, Volume, Chapter, ProjectCreativeProfile
 from app.models.schemas import VolumeResponse, ChapterResponse, GenerateOutlineRequest
 from app.services.llm_service import llm_service
 from pydantic import BaseModel
 import json
+import re
 
 class GenerateVolumeRequest(BaseModel):
     project_id: int
@@ -49,6 +50,49 @@ def format_creative_profile(profile):
         f"读者承诺: {profile.reader_promise or ''}",
         f"独特机制: {profile.unique_mechanism or ''}",
     ]).strip()
+
+
+def _normalize_chapter_target_words(chapter_data: dict, default_target: int) -> tuple[int, str]:
+    """从章节JSON中提取目标字数（兼容 int / 范围文本）"""
+    fallback = int(default_target or 2000)
+    raw_target = chapter_data.get("target_words")
+    raw_ref = chapter_data.get("word_count_reference")
+
+    target = None
+    ref_text = ""
+
+    if isinstance(raw_target, (int, float)) and int(raw_target) > 0:
+        target = int(raw_target)
+        ref_text = str(target)
+
+    if target is None and isinstance(raw_ref, (int, float)) and int(raw_ref) > 0:
+        target = int(raw_ref)
+        ref_text = str(target)
+
+    if target is None:
+        txt = str(raw_ref or "").strip()
+        if txt:
+            ref_text = txt
+            norm = txt.replace(",", "").replace("，", "")
+            # 3000-5000 / 3000~5000 / 3000至5000
+            m = re.search(r"(\d{3,6})\s*[-~～至到]\s*(\d{3,6})", norm)
+            if m:
+                a, b = int(m.group(1)), int(m.group(2))
+                if a > b:
+                    a, b = b, a
+                target = int(round((a + b) / 2))
+            else:
+                m2 = re.search(r"(\d{3,6})", norm)
+                if m2:
+                    target = int(m2.group(1))
+
+    if target is None:
+        target = fallback
+        if not ref_text:
+            ref_text = str(fallback)
+
+    target = max(500, min(20000, int(target)))
+    return target, ref_text
 
 
 def _normalize_master_outline_text(raw: str) -> str:
@@ -160,6 +204,9 @@ def generate_outline(request: GenerateOutlineRequest, db: Session = Depends(get_
 
         # 保存章节
         for chapter_data in volume_data.get("chapters", []):
+            target_words, word_count_reference = _normalize_chapter_target_words(
+                chapter_data, project.target_words_per_chapter
+            )
             chapter = Chapter(
                 project_id=request.project_id,
                 volume_id=volume.id,
@@ -173,6 +220,8 @@ def generate_outline(request: GenerateOutlineRequest, db: Session = Depends(get_
                 hook=chapter_data.get("hook", ""),
                 antagonist_level=chapter_data.get("antagonist_level", ""),
                 pov=chapter_data.get("pov", ""),
+                target_words=target_words,
+                word_count_reference=word_count_reference,
                 outline=chapter_data.get("outline", ""),
                 content="",
                 is_generated=False
@@ -267,6 +316,45 @@ class GenerateVolumeChaptersRequest(BaseModel):
     end_chapter: int
     total_chapters: int
 
+
+def _normalize_generated_chapter_items(raw, start_chapter: int, end_chapter: int) -> List[dict]:
+    """规范化LLM返回，尽量保证章号连续可落库"""
+    items = raw
+    if isinstance(raw, dict):
+        if isinstance(raw.get("chapters"), list):
+            items = raw.get("chapters")
+        elif isinstance(raw.get("data"), list):
+            items = raw.get("data")
+        else:
+            items = []
+    if not isinstance(items, list):
+        items = []
+
+    normalized: Dict[int, dict] = {}
+    cursor = start_chapter
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("chapter_index")
+        try:
+            idx = int(idx)
+        except Exception:
+            idx = start_chapter + i
+
+        if idx < start_chapter or idx > end_chapter:
+            if cursor <= end_chapter:
+                idx = cursor
+            else:
+                continue
+
+        if idx not in normalized:
+            fixed = dict(item)
+            fixed["chapter_index"] = idx
+            normalized[idx] = fixed
+            cursor = max(cursor, idx + 1)
+
+    return [normalized[k] for k in sorted(normalized.keys())]
+
 @router.post("/generate-volume-chapters")
 def generate_volume_chapters(request: GenerateVolumeChaptersRequest, db: Session = Depends(get_db)):
     """在已有卷骨架中，分批生成指定范围的章节"""
@@ -299,52 +387,99 @@ def generate_volume_chapters(request: GenerateVolumeChaptersRequest, db: Session
 高潮：{volume.climax}
 """
 
-    # 生成指定范围的章节
-    chapters_count = request.end_chapter - request.start_chapter + 1
-    result = llm_service.generate_volume_chapters(
-        genre=project.genre,
-        title=project.title,
-        volume_info=volume_info,
-        world_setting=world_text,
-        characters=chars_text,
-        volume_index=request.volume_index,
-        start_chapter=request.start_chapter,
-        chapters_count=chapters_count,
-        total_chapters=request.total_chapters,
-        user_prompt=(project.description or "")
-        + f"\n\n【项目总纲】\n{master_outline_text}"
-        + ("\n题材新颖度配置:\n" + creative_profile_text if creative_profile_text else "")
+    # 生成指定范围的章节：自动切分小批次，避免模型一次只返回10章
+    prompt_user = (project.description or "") + f"\n\n【项目总纲】\n{master_outline_text}" + (
+        "\n题材新颖度配置:\n" + creative_profile_text if creative_profile_text else ""
     )
+    target_start = int(request.start_chapter)
+    target_end = int(request.end_chapter)
+    if target_end < target_start:
+        raise HTTPException(status_code=400, detail="章节范围非法：end_chapter 不能小于 start_chapter")
 
+    chunk_size = 10  # 单次最大10章，防止输出截断
+    all_generated: List[dict] = []
+    current = target_start
+    while current <= target_end:
+        chunk_end = min(current + chunk_size - 1, target_end)
+        count = chunk_end - current + 1
+        raw_chunk = llm_service.generate_volume_chapters(
+            genre=project.genre,
+            title=project.title,
+            volume_info=volume_info,
+            world_setting=world_text,
+            characters=chars_text,
+            volume_index=request.volume_index,
+            start_chapter=current,
+            chapters_count=count,
+            total_chapters=request.total_chapters,
+            user_prompt=prompt_user
+        )
+        chunk = _normalize_generated_chapter_items(raw_chunk, current, chunk_end)
+
+        # 若缺章，自动补一次（只补缺口）
+        if len(chunk) < count:
+            got = {int(x.get("chapter_index")) for x in chunk if x.get("chapter_index") is not None}
+            missing = [idx for idx in range(current, chunk_end + 1) if idx not in got]
+            for miss_idx in missing:
+                patch_raw = llm_service.generate_volume_chapters(
+                    genre=project.genre,
+                    title=project.title,
+                    volume_info=volume_info,
+                    world_setting=world_text,
+                    characters=chars_text,
+                    volume_index=request.volume_index,
+                    start_chapter=miss_idx,
+                    chapters_count=1,
+                    total_chapters=request.total_chapters,
+                    user_prompt=prompt_user
+                )
+                patch = _normalize_generated_chapter_items(patch_raw, miss_idx, miss_idx)
+                if patch:
+                    chunk.extend(patch)
+
+        chunk = _normalize_generated_chapter_items(chunk, current, chunk_end)
+        all_generated.extend(chunk)
+        current = chunk_end + 1
+
+    result = _normalize_generated_chapter_items(all_generated, target_start, target_end)
     if not result:
-        raise HTTPException(status_code=500, detail="章节生成失败")
+        raise HTTPException(status_code=500, detail="章节生成失败：模型未返回有效章节JSON")
 
-    # 保存章节
+    # 保存章节（同章号存在则覆盖大纲字段，避免重复新增）
     saved_chapters = []
     for chapter_data in result:
-        # 修正章节号
-        if "chapter_index" not in chapter_data:
-            chapter_data["chapter_index"] = request.start_chapter + chapter_data.get("i", 0)
+        chapter_idx = int(chapter_data.get("chapter_index", request.start_chapter))
+        target_words, word_count_reference = _normalize_chapter_target_words(
+            chapter_data, project.target_words_per_chapter
+        )
+        chapter = db.query(Chapter)\
+            .filter(Chapter.volume_id == volume.id)\
+            .filter(Chapter.chapter_index == chapter_idx)\
+            .first()
 
-        chapter = Chapter(
-            project_id=request.project_id,
-            volume_id=volume.id,
-            chapter_index=chapter_data.get("chapter_index", request.start_chapter),
-            title=chapter_data.get("title", ""),
-            goal=chapter_data.get("goal", ""),
-            conflict=chapter_data.get("conflict", ""),
-            cost=chapter_data.get("cost", ""),
-            strand=chapter_data.get("strand", ""),
-            cool_point_type=chapter_data.get("cool_point_type", ""),
-            hook=chapter_data.get("hook", ""),
-            antagonist_level=chapter_data.get("antagonist_level", ""),
-            pov=chapter_data.get("pov", ""),
-            outline=chapter_data.get("outline", ""),
-            content="",
-            is_generated=False
-        );
-        db.add(chapter);
-        saved_chapters.append(chapter);
+        if not chapter:
+            chapter = Chapter(
+                project_id=request.project_id,
+                volume_id=volume.id,
+                chapter_index=chapter_idx,
+                content="",
+                is_generated=False
+            )
+            db.add(chapter)
+
+        chapter.title = chapter_data.get("title", "") or chapter.title
+        chapter.goal = chapter_data.get("goal", "")
+        chapter.conflict = chapter_data.get("conflict", "")
+        chapter.cost = chapter_data.get("cost", "")
+        chapter.strand = chapter_data.get("strand", "")
+        chapter.cool_point_type = chapter_data.get("cool_point_type", "")
+        chapter.hook = chapter_data.get("hook", "")
+        chapter.antagonist_level = chapter_data.get("antagonist_level", "")
+        chapter.pov = chapter_data.get("pov", "")
+        chapter.target_words = target_words
+        chapter.word_count_reference = word_count_reference
+        chapter.outline = chapter_data.get("outline", "")
+        saved_chapters.append(chapter)
 
     db.commit()
     for c in saved_chapters:
@@ -416,6 +551,9 @@ def generate_single_volume(request: GenerateVolumeRequest, db: Session = Depends
 
         # 保存章节
         for chapter_data in volume_data.get("chapters", []):
+            target_words, word_count_reference = _normalize_chapter_target_words(
+                chapter_data, project.target_words_per_chapter
+            )
             chapter = Chapter(
                 project_id=request.project_id,
                 volume_id=volume.id,
@@ -429,6 +567,8 @@ def generate_single_volume(request: GenerateVolumeRequest, db: Session = Depends
                 hook=chapter_data.get("hook", ""),
                 antagonist_level=chapter_data.get("antagonist_level", ""),
                 pov=chapter_data.get("pov", ""),
+                target_words=target_words,
+                word_count_reference=word_count_reference,
                 outline=chapter_data.get("outline", ""),
                 content="",
                 is_generated=False
@@ -506,6 +646,14 @@ def update_chapter(chapter_id: int, data: dict, db: Session = Depends(get_db)):
         chapter.antagonist_level = data["antagonist_level"]
     if "pov" in data:
         chapter.pov = data["pov"]
+    if "target_words" in data:
+        try:
+            tv = int(data.get("target_words") or 0)
+            chapter.target_words = max(500, min(20000, tv)) if tv > 0 else None
+        except Exception:
+            chapter.target_words = chapter.target_words
+    if "word_count_reference" in data:
+        chapter.word_count_reference = (data.get("word_count_reference") or "").strip()
     if "outline" in data:
         chapter.outline = data["outline"]
     if "content" in data:

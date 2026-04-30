@@ -405,6 +405,7 @@ class LLMService:
 {json.dumps(beats, ensure_ascii=False, indent=2)}
 
 {hook_rules}
+{self._word_limit_rules_text(target_words)}
 
 请输出正文，约{target_words}字。"""
         return self.generate(prompt, system_prompt, temperature=0.7)
@@ -451,6 +452,40 @@ class LLMService:
         middle = "\n\n".join(paras[i:j])
         ending = "\n\n".join(paras[j:])
         return (opening, middle, ending)
+
+    def _word_limit_bounds(self, target_words: int):
+        t = max(500, int(target_words or 2000))
+        low = max(300, int(t * 0.9))
+        high = max(low + 80, int(t * 1.1))
+        return t, low, high
+
+    def _word_limit_rules_text(self, target_words: int) -> str:
+        t, low, high = self._word_limit_bounds(target_words)
+        return f"【字数硬约束】目标字数={t}，允许范围={low}-{high}。必须落在该区间内。"
+
+    def _enforce_word_count_hard(self, chapter: dict, content: str, target_words: int, chapter_index: int) -> str:
+        _, low, high = self._word_limit_bounds(target_words)
+        cur = len((content or "").replace("\n", ""))
+        if low <= cur <= high:
+            return content
+        action = "扩写补足有效信息与动作" if cur < low else "压缩删冗"
+        hook_rules = self._hook_rules_for_early_chapters(chapter_index)
+        system_prompt = "你是网文改稿编辑。仅做字数校正，不改主线事件。"
+        prompt = f"""请对正文做{action}，并强制控制在 {low}-{high} 字。
+要求：
+1) 保持主线事件顺序、核心冲突、章末钩子不变；
+2) 不新增大支线，不删除关键设定；
+3) 仅输出校正后的正文。
+
+{hook_rules}
+{self._word_limit_rules_text(target_words)}
+
+【章节标题】{chapter.get('title','')}
+【正文】
+{content}
+"""
+        adjusted = self.generate(prompt, system_prompt, temperature=0.4)
+        return adjusted if adjusted and adjusted.strip() else content
 
     def _rewrite_chapter_partially(self, project_info: dict, chapter: dict, content: str, weak: List[str], feedback: str, chapter_index: int) -> str:
         hook_rules = self._hook_rules_for_early_chapters(chapter_index)
@@ -506,6 +541,7 @@ class LLMService:
         prompt = f"""请基于原文做定向增强，弱项：{weak}。
 改进建议：{feedback}
 {hook_rules}
+{self._word_limit_rules_text(target_words)}
 
 【原文】
 {content}
@@ -523,6 +559,7 @@ class LLMService:
         if weak:
             quality["weak_dimensions"] = weak
             content = self.rewrite_chapter_by_feedback(project_info, chapter, content, quality, target_words, chapter_index)
+        content = self._enforce_word_count_hard(chapter, content, target_words, chapter_index)
         return content
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None, temperature: float = 0.7) -> str:

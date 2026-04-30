@@ -16,6 +16,22 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
+
+def ensure_runtime_schema():
+    """轻量运行时补列：兼容已存在旧库（仅追加缺失列）"""
+    try:
+        with engine.begin() as conn:
+            if conn.dialect.name != "sqlite":
+                return
+            rows = conn.exec_driver_sql("PRAGMA table_info(chapters)").fetchall()
+            columns = {r[1] for r in rows}
+            if "target_words" not in columns:
+                conn.exec_driver_sql("ALTER TABLE chapters ADD COLUMN target_words INTEGER")
+            if "word_count_reference" not in columns:
+                conn.exec_driver_sql("ALTER TABLE chapters ADD COLUMN word_count_reference TEXT")
+    except Exception as e:
+        print(f"ensure_runtime_schema warning: {e}")
+
 def get_db():
     db = SessionLocal()
     try:
