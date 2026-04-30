@@ -55,6 +55,31 @@ class CharacterResponse(CharacterCreate):
     class Config:
         from_attributes = True
 
+
+class CharacterRelationshipCreate(BaseModel):
+    source_character_id: int
+    target_character_id: int
+    relation_type: str = "acquaintance"
+    intensity: float = 0.5
+    status: str = "stable"
+    notes: Optional[str] = ""
+
+
+class CharacterRelationshipUpdate(BaseModel):
+    relation_type: Optional[str] = None
+    intensity: Optional[float] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class CharacterRelationshipResponse(CharacterRelationshipCreate):
+    id: int
+    project_id: int
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
 class VolumeCreate(BaseModel):
     title: Optional[str] = None
     summary: Optional[str] = None
@@ -138,6 +163,9 @@ class LLMProfile(BaseModel):
     base_url: str
     model: str
     max_tokens: int
+    enabled: Optional[bool] = True
+    tags: Optional[List[str]] = []
+    last_check: Optional[dict] = {}
 
 
 class LLMProfileCreate(BaseModel):
@@ -156,3 +184,38 @@ class LLMProfileUpdate(LLMProfileCreate):
 class LLMProfilesResponse(BaseModel):
     active_profile_id: str
     profiles: List[LLMProfile]
+
+
+class ProjectCreativeProfileCreate(BaseModel):
+    core_contrast: Optional[str] = ""
+    cheat_cost: Optional[str] = ""
+    reader_promise: Optional[str] = ""
+    unique_mechanism: Optional[str] = ""
+
+
+class ProjectCreativeProfileResponse(ProjectCreativeProfileCreate):
+    id: int
+    project_id: int
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class WorkbenchChatRequest(BaseModel):
+    message: str
+    save_version: bool = True
+
+
+class WorkbenchApplyRequest(BaseModel):
+    message_id: int
+    summary: Optional[str] = ""
+
+
+class VersionTuneRequest(BaseModel):
+    instruction: str
+
+
+class ManualVersionSaveRequest(BaseModel):
+    content: dict
+    summary: Optional[str] = "手动微调"

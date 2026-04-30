@@ -25,6 +25,19 @@ class NovelProject(Base):
     enable_review = Column(Boolean, default=False)  # 是否启用审查
     target_words_per_chapter = Column(Integer, default=2000)
 
+
+class ProjectCreativeProfile(Base):
+    """题材新颖度结构化配置"""
+    __tablename__ = "project_creative_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), unique=True, index=True, nullable=False)
+    core_contrast = Column(Text, default="")  # 核心反差
+    cheat_cost = Column(Text, default="")  # 金手指代价
+    reader_promise = Column(Text, default="")  # 读者承诺
+    unique_mechanism = Column(Text, default="")  # 独特机制
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
 class WorldSetting(Base):
     """世界观设定"""
     __tablename__ = "world_settings"
@@ -55,6 +68,21 @@ class Character(Base):
     is_main = Column(Boolean, default=False)  # 是否主角
 
     project = relationship("NovelProject", back_populates="characters")
+
+
+class CharacterRelationship(Base):
+    """角色关系边（群像关系图）"""
+    __tablename__ = "character_relationships"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), index=True, nullable=False)
+    source_character_id = Column(Integer, ForeignKey("characters.id"), index=True, nullable=False)
+    target_character_id = Column(Integer, ForeignKey("characters.id"), index=True, nullable=False)
+    relation_type = Column(String(50), nullable=False, default="acquaintance")  # ally/enemy/family/love/master_rival...
+    intensity = Column(Float, default=0.5)  # 0~1
+    status = Column(String(100), default="stable")  # current status: trust-broken/cooperate/hostile...
+    notes = Column(Text, default="")
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
 class Volume(Base):
     """卷"""
@@ -140,3 +168,42 @@ class AppConfig(Base):
     config_key = Column(String(100), unique=True, nullable=False, index=True)
     config_value = Column(Text, nullable=False, default="")
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class CreativeSession(Base):
+    """创作工作台会话"""
+    __tablename__ = "creative_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), index=True, nullable=False)
+    module = Column(String(30), index=True, nullable=False)  # world/characters/outline
+    title = Column(String(200), default="")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class CreativeMessage(Base):
+    """会话消息记录"""
+    __tablename__ = "creative_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("creative_sessions.id"), index=True, nullable=False)
+    role = Column(String(20), nullable=False)  # user/assistant
+    content = Column(Text, nullable=False, default="")
+    proposal_json = Column(Text, default="")  # assistant可附带结构化候选内容
+    summary = Column(String(300), default="")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class CreativeVersion(Base):
+    """模块版本快照，可回滚对比"""
+    __tablename__ = "creative_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), index=True, nullable=False)
+    module = Column(String(30), index=True, nullable=False)  # world/characters/outline
+    version_no = Column(Integer, nullable=False, default=1)
+    summary = Column(String(300), default="")
+    content_json = Column(Text, nullable=False, default="")
+    source_message_id = Column(Integer, ForeignKey("creative_messages.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

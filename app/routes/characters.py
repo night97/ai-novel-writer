@@ -2,8 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
-from app.models.models import NovelProject, Character
-from app.models.schemas import CharacterCreate, CharacterResponse
+from app.models.models import NovelProject, Character, CharacterRelationship
+from app.models.schemas import (
+    CharacterCreate,
+    CharacterResponse,
+    CharacterRelationshipCreate,
+    CharacterRelationshipUpdate,
+    CharacterRelationshipResponse,
+)
 from app.services.llm_service import llm_service
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
@@ -182,3 +188,91 @@ def delete_all_characters(project_id: int, db: Session = Depends(get_db)):
     count = db.query(Character).filter(Character.project_id == project_id).delete()
     db.commit()
     return {"success": True, "message": f"已删除所有 {count} 个角色"}
+
+
+@router.get("/relationships/{project_id}", response_model=List[CharacterRelationshipResponse])
+def list_relationships(project_id: int, db: Session = Depends(get_db)):
+    """获取项目角色关系图边列表"""
+    edges = db.query(CharacterRelationship)\
+        .filter(CharacterRelationship.project_id == project_id)\
+        .order_by(CharacterRelationship.updated_at.desc())\
+        .all()
+    return edges
+
+
+@router.post("/relationships/{project_id}", response_model=CharacterRelationshipResponse)
+def create_relationship(project_id: int, data: CharacterRelationshipCreate, db: Session = Depends(get_db)):
+    """新增角色关系边"""
+    if data.source_character_id == data.target_character_id:
+        raise HTTPException(status_code=400, detail="关系两端不能是同一角色")
+
+    source = db.query(Character).filter(
+        Character.id == data.source_character_id,
+        Character.project_id == project_id
+    ).first()
+    target = db.query(Character).filter(
+        Character.id == data.target_character_id,
+        Character.project_id == project_id
+    ).first()
+    if not source or not target:
+        raise HTTPException(status_code=404, detail="关系角色不存在或不属于该项目")
+
+    existed = db.query(CharacterRelationship).filter(
+        CharacterRelationship.project_id == project_id,
+        CharacterRelationship.source_character_id == data.source_character_id,
+        CharacterRelationship.target_character_id == data.target_character_id
+    ).first()
+    if existed:
+        existed.relation_type = data.relation_type
+        existed.intensity = max(0.0, min(1.0, data.intensity))
+        existed.status = data.status
+        existed.notes = data.notes or ""
+        db.commit()
+        db.refresh(existed)
+        return existed
+
+    edge = CharacterRelationship(
+        project_id=project_id,
+        source_character_id=data.source_character_id,
+        target_character_id=data.target_character_id,
+        relation_type=data.relation_type,
+        intensity=max(0.0, min(1.0, data.intensity)),
+        status=data.status,
+        notes=data.notes or "",
+    )
+    db.add(edge)
+    db.commit()
+    db.refresh(edge)
+    return edge
+
+
+@router.put("/relationships/{relationship_id}", response_model=CharacterRelationshipResponse)
+def update_relationship(relationship_id: int, data: CharacterRelationshipUpdate, db: Session = Depends(get_db)):
+    """更新角色关系边"""
+    edge = db.query(CharacterRelationship).filter(CharacterRelationship.id == relationship_id).first()
+    if not edge:
+        raise HTTPException(status_code=404, detail="关系不存在")
+
+    if data.relation_type is not None:
+        edge.relation_type = data.relation_type
+    if data.intensity is not None:
+        edge.intensity = max(0.0, min(1.0, data.intensity))
+    if data.status is not None:
+        edge.status = data.status
+    if data.notes is not None:
+        edge.notes = data.notes
+
+    db.commit()
+    db.refresh(edge)
+    return edge
+
+
+@router.delete("/relationships/{relationship_id}")
+def delete_relationship(relationship_id: int, db: Session = Depends(get_db)):
+    """删除角色关系边"""
+    edge = db.query(CharacterRelationship).filter(CharacterRelationship.id == relationship_id).first()
+    if not edge:
+        raise HTTPException(status_code=404, detail="关系不存在")
+    db.delete(edge)
+    db.commit()
+    return {"success": True, "message": "关系已删除"}

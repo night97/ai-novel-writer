@@ -1,30 +1,16 @@
 <claude-mem-context>
 # Memory Context
 
-# [ai-novel-writer] recent context, 2026-04-29 10:44pm GMT+8
+# [ai-novel-writer] recent context, 2026-04-30 6:28pm GMT+8
 
 Legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision
 Format: ID TIME TYPE TITLE
 Fetch details: get_observations([IDs]) | Search: mem-search skill
 
-Stats: 50 obs (16,158t read) | 0t work
+Stats: 50 obs (16,262t read) | 0t work
 
 ### Apr 29, 2026
-15 8:36p 🟣 Settings Router Registered in FastAPI Application
-16 " 🟣 Single Volume GET Endpoint Added to Outline Routes
-17 " 🟣 LLM Settings Modal UI Added to Index Template
-18 8:37p 🟣 LLM Settings JavaScript Functions Added to Frontend
-19 " 🔴 Empty Base URL Fallback in LLM Config Update
-20 " 🔵 Python Compilation Check Passed After Multi-File Changes
-21 8:41p 🟣 LLM Profile Schemas Added for Multi-Configuration Support
-22 " 🟣 Settings Route Rewritten for Full LLM Profile Management
-23 8:42p 🟣 LLM Profile Management UI Added to Settings Modal
-24 " 🟣 LLM Profile Management JavaScript Fully Implemented
-25 8:43p 🔵 LLM Profile Feature Verified End-to-End After Full Implementation
-26 8:50p 🔵 OpenAI 404 Error on Chapter Generation
-27 " 🔵 LLMService Architecture and Model Configuration
-28 " 🔵 Settings API and Frontend Configuration UI Structure
-29 " 🟣 Model Validation Method Added to LLMService
+29 8:50p 🟣 Model Validation Method Added to LLMService
 30 " 🟣 Model Validation API Endpoint Added
 31 8:51p 🟣 Frontend Model Validation UI Added to Config Modal
 32 " 🟣 JavaScript Validation and Provider Change Handlers Implemented
@@ -60,4 +46,18 @@ Stats: 50 obs (16,158t read) | 0t work
 62 10:40p 🔵 AI novel writer project is not a git repository
 63 " 🔵 Copy operation to create ensemble-v2 backup failed with permission error
 64 10:42p ✅ AI novel writer project forked to ensemble-v2 variant
+65 10:45p 🔵 Git operations fail with permission denied on lock files
+66 " 🔵 ai-novel-writer project file structure revealed
+67 10:46p ✅ ai-novel-writer initialized with local git on ensemble-upgrade branch
+68 10:53p 🔵 ai-novel-writer architecture baseline before ensemble upgrade
+69 " 🟣 CharacterRelationship model added for ensemble relationship graph
+70 10:54p 🟣 Character relationship CRUD API endpoints added
+71 " 🟣 Ensemble-aware character injection into chapter generation
+72 10:55p 🟣 LLM chapter prompt split into full and active character sections
+73 11:01p 🟣 Frontend relationship graph management UI added to characters tab
+74 11:12p 🔵 AI Novel Writer Database Schema and Project State
+75 " 🔵 Local API Server Unreachable from Claude Sandbox
+76 11:13p 🔵 Chapter Generation Blocked by RAG Service Model Loading
+77 " 🔴 RAG Service Failure Graceful Degradation in Chapter Generation
+78 " 🔵 LLM API Configuration and Chapter Generation Pipeline Revealed
 </claude-mem-context>

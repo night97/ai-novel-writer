@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
-from app.models.models import NovelProject, WorldSetting, Character, Volume, Chapter
+from app.models.models import NovelProject, WorldSetting, Character, Volume, Chapter, ProjectCreativeProfile
 from app.models.schemas import VolumeResponse, ChapterResponse, GenerateOutlineRequest
 from app.services.llm_service import llm_service
 from pydantic import BaseModel
+import json
 
 class GenerateVolumeRequest(BaseModel):
     project_id: int
@@ -37,6 +38,49 @@ def format_characters(characters):
     for char in characters:
         parts.append(f"- {char.name}: {char.personality or ''} {char.background or ''}")
     return "\n".join(parts)
+
+
+def format_creative_profile(profile):
+    if not profile:
+        return ""
+    return "\n".join([
+        f"核心反差: {profile.core_contrast or ''}",
+        f"金手指代价: {profile.cheat_cost or ''}",
+        f"读者承诺: {profile.reader_promise or ''}",
+        f"独特机制: {profile.unique_mechanism or ''}",
+    ]).strip()
+
+
+def _normalize_master_outline_text(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            preferred = [
+                ("core_promise", "核心承诺"),
+                ("target_reader", "目标读者"),
+                ("ending", "故事终局"),
+                ("ultimate_truth", "世界终极真相"),
+                ("character_endings", "角色终局"),
+                ("act1", "第一幕"),
+                ("act2", "第二幕"),
+                ("act3", "第三幕"),
+                ("act4", "第四幕"),
+                ("act5", "第五幕"),
+                ("master_outline", "总纲全文"),
+            ]
+            parts = []
+            for key, label in preferred:
+                val = data.get(key)
+                if val:
+                    parts.append(f"{label}: {val}")
+            if parts:
+                return "\n".join(parts)
+    except Exception:
+        pass
+    return text
 
 @router.get("/{project_id}/volumes", response_model=List[VolumeResponse])
 def get_volumes(project_id: int, db: Session = Depends(get_db)):
@@ -71,13 +115,18 @@ def generate_outline(request: GenerateOutlineRequest, db: Session = Depends(get_
     project = db.query(NovelProject).filter(NovelProject.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+    if not (project.master_outline and project.master_outline.strip()):
+        raise HTTPException(status_code=400, detail="请先在“总纲工作台”沉淀并发布项目总纲，再生成卷纲")
+    master_outline_text = _normalize_master_outline_text(project.master_outline)
 
     # 获取世界观和角色
     world = db.query(WorldSetting).filter(WorldSetting.project_id == request.project_id).first()
     characters = db.query(Character).filter(Character.project_id == request.project_id).all()
+    creative_profile = db.query(ProjectCreativeProfile).filter(ProjectCreativeProfile.project_id == request.project_id).first()
 
     world_text = format_world_setting(world)
     chars_text = format_characters(characters)
+    creative_profile_text = format_creative_profile(creative_profile)
 
     result = llm_service.generate_outline(
         genre=project.genre,
@@ -86,7 +135,8 @@ def generate_outline(request: GenerateOutlineRequest, db: Session = Depends(get_
         characters=chars_text,
         num_volumes=request.num_volumes,
         chapters_per_volume=request.chapters_per_volume,
-        user_prompt=project.description or ""
+        user_prompt=(project.description or "") + f"\n\n【项目总纲】\n{master_outline_text}",
+        creative_profile=creative_profile_text
     )
 
     if not result:
@@ -152,13 +202,18 @@ def generate_volume_skeleton(request: GenerateVolumeSkeletonRequest, db: Session
     project = db.query(NovelProject).filter(NovelProject.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+    if not (project.master_outline and project.master_outline.strip()):
+        raise HTTPException(status_code=400, detail="请先在“总纲工作台”沉淀并发布项目总纲，再生成卷骨架")
+    master_outline_text = _normalize_master_outline_text(project.master_outline)
 
     # 获取世界观和角色
     world = db.query(WorldSetting).filter(WorldSetting.project_id == request.project_id).first()
     characters = db.query(Character).filter(Character.project_id == request.project_id).all()
+    creative_profile = db.query(ProjectCreativeProfile).filter(ProjectCreativeProfile.project_id == request.project_id).first()
 
     world_text = format_world_setting(world)
     chars_text = format_characters(characters)
+    creative_profile_text = format_creative_profile(creative_profile)
 
     # 只生成卷骨架，不生成完整章节
     result = llm_service.generate_volume_skeleton(
@@ -167,7 +222,9 @@ def generate_volume_skeleton(request: GenerateVolumeSkeletonRequest, db: Session
         world_setting=world_text,
         characters=chars_text,
         total_chapters=request.total_chapters,
-        user_prompt=project.description or ""
+        user_prompt=(project.description or "")
+        + f"\n\n【项目总纲】\n{master_outline_text}"
+        + ("\n题材新颖度配置:\n" + creative_profile_text if creative_profile_text else "")
     )
 
     if not result:
@@ -216,6 +273,9 @@ def generate_volume_chapters(request: GenerateVolumeChaptersRequest, db: Session
     project = db.query(NovelProject).filter(NovelProject.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+    if not (project.master_outline and project.master_outline.strip()):
+        raise HTTPException(status_code=400, detail="请先在“总纲工作台”沉淀并发布项目总纲，再生成章节大纲")
+    master_outline_text = _normalize_master_outline_text(project.master_outline)
 
     volume = db.query(Volume).filter(Volume.id == request.volume_id).first()
     if not volume:
@@ -224,9 +284,11 @@ def generate_volume_chapters(request: GenerateVolumeChaptersRequest, db: Session
     # 获取世界观和角色
     world = db.query(WorldSetting).filter(WorldSetting.project_id == request.project_id).first()
     characters = db.query(Character).filter(Character.project_id == request.project_id).all()
+    creative_profile = db.query(ProjectCreativeProfile).filter(ProjectCreativeProfile.project_id == request.project_id).first()
 
     world_text = format_world_setting(world)
     chars_text = format_characters(characters)
+    creative_profile_text = format_creative_profile(creative_profile)
 
     # 获取卷骨架信息一起传给LLM
     volume_info = f"""
@@ -249,7 +311,9 @@ def generate_volume_chapters(request: GenerateVolumeChaptersRequest, db: Session
         start_chapter=request.start_chapter,
         chapters_count=chapters_count,
         total_chapters=request.total_chapters,
-        user_prompt=project.description or ""
+        user_prompt=(project.description or "")
+        + f"\n\n【项目总纲】\n{master_outline_text}"
+        + ("\n题材新颖度配置:\n" + creative_profile_text if creative_profile_text else "")
     )
 
     if not result:
@@ -298,13 +362,18 @@ def generate_single_volume(request: GenerateVolumeRequest, db: Session = Depends
     project = db.query(NovelProject).filter(NovelProject.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+    if not (project.master_outline and project.master_outline.strip()):
+        raise HTTPException(status_code=400, detail="请先在“总纲工作台”沉淀并发布项目总纲，再生成卷纲")
+    master_outline_text = _normalize_master_outline_text(project.master_outline)
 
     # 获取世界观和角色
     world = db.query(WorldSetting).filter(WorldSetting.project_id == request.project_id).first()
     characters = db.query(Character).filter(Character.project_id == request.project_id).all()
+    creative_profile = db.query(ProjectCreativeProfile).filter(ProjectCreativeProfile.project_id == request.project_id).first()
 
     world_text = format_world_setting(world)
     chars_text = format_characters(characters)
+    creative_profile_text = format_creative_profile(creative_profile)
 
     # 只生成一卷
     result = llm_service.generate_outline(
@@ -314,7 +383,8 @@ def generate_single_volume(request: GenerateVolumeRequest, db: Session = Depends
         characters=chars_text,
         num_volumes=1,
         chapters_per_volume=request.chapters_per_volume,
-        user_prompt=project.description or ""
+        user_prompt=(project.description or "") + f"\n\n【项目总纲】\n{master_outline_text}",
+        creative_profile=creative_profile_text
     )
 
     if not result:

@@ -53,6 +53,16 @@ def _default_base_url(provider: str) -> str:
     return "https://api.anthropic.com" if provider == "anthropic" else "https://api.openai.com/v1"
 
 
+def _normalize_profile_meta(profile: dict) -> dict:
+    if "enabled" not in profile:
+        profile["enabled"] = True
+    if "tags" not in profile or not isinstance(profile["tags"], list):
+        profile["tags"] = []
+    if "last_check" not in profile or not isinstance(profile["last_check"], dict):
+        profile["last_check"] = {}
+    return profile
+
+
 def _runtime_to_profile(runtime: dict):
     provider = _normalize_provider(runtime.get("provider", "anthropic"))
     return {
@@ -99,7 +109,7 @@ def _load_profiles(db: Session):
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
-                profiles = parsed
+                profiles = [_normalize_profile_meta(p) for p in parsed if isinstance(p, dict)]
         except Exception:
             profiles = []
 
@@ -129,6 +139,8 @@ def _apply_active_profile(profiles, active_id: str):
         raise HTTPException(status_code=404, detail="活动模型配置不存在")
 
     provider = _normalize_provider(active.get("provider", "anthropic"))
+    if active.get("enabled") is False:
+        raise HTTPException(status_code=400, detail="当前活动模型配置已禁用，请先启用或切换配置")
     payload = {
         "provider": provider,
         "api_key": (active.get("api_key") or "").strip(),
@@ -186,6 +198,9 @@ def create_llm_profile(data: LLMProfileCreate, db: Session = Depends(get_db)):
         "base_url": (data.base_url or "").strip() or _default_base_url(provider),
         "model": data.model.strip(),
         "max_tokens": int(data.max_tokens),
+        "enabled": True,
+        "tags": [],
+        "last_check": {},
     }
     profiles.append(new_profile)
 
@@ -209,6 +224,7 @@ def update_llm_profile(profile_id: str, data: LLMProfileUpdate, db: Session = De
     target["base_url"] = (data.base_url or "").strip() or _default_base_url(provider)
     target["model"] = data.model.strip()
     target["max_tokens"] = int(data.max_tokens)
+    _normalize_profile_meta(target)
 
     _save_profiles(db, profiles, active_id)
     db.commit()
@@ -216,6 +232,27 @@ def update_llm_profile(profile_id: str, data: LLMProfileUpdate, db: Session = De
     if active_id == profile_id:
         _apply_active_profile(profiles, active_id)
 
+    return {"active_profile_id": active_id, "profiles": profiles}
+
+
+@router.put("/llm/profiles/{profile_id}/meta", response_model=LLMProfilesResponse)
+def update_llm_profile_meta(profile_id: str, data: dict, db: Session = Depends(get_db)):
+    profiles, active_id = _load_profiles(db)
+    target = next((p for p in profiles if p.get("id") == profile_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="模型配置不存在")
+
+    if "enabled" in data:
+        target["enabled"] = bool(data.get("enabled"))
+    if "tags" in data and isinstance(data.get("tags"), list):
+        target["tags"] = [str(x).strip() for x in data.get("tags") if str(x).strip()]
+    _normalize_profile_meta(target)
+
+    if active_id == profile_id and target.get("enabled") is False:
+        raise HTTPException(status_code=400, detail="不能禁用当前活动配置，请先切换其他配置")
+
+    _save_profiles(db, profiles, active_id)
+    db.commit()
     return {"active_profile_id": active_id, "profiles": profiles}
 
 
@@ -244,12 +281,36 @@ def switch_active_profile(profile_id: str, db: Session = Depends(get_db)):
     profiles, _active_id = _load_profiles(db)
     if not any(p.get("id") == profile_id for p in profiles):
         raise HTTPException(status_code=404, detail="模型配置不存在")
+    target = next((p for p in profiles if p.get("id") == profile_id), None)
+    if target and target.get("enabled") is False:
+        raise HTTPException(status_code=400, detail="该配置已禁用，无法切换为活动配置")
 
     _save_profiles(db, profiles, profile_id)
     db.commit()
     _apply_active_profile(profiles, profile_id)
 
     return {"active_profile_id": profile_id, "profiles": profiles}
+
+
+@router.post("/llm/profiles/{profile_id}/check", response_model=LLMProfilesResponse)
+def check_profile(profile_id: str, db: Session = Depends(get_db)):
+    profiles, active_id = _load_profiles(db)
+    target = next((p for p in profiles if p.get("id") == profile_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="模型配置不存在")
+
+    result = llm_service.validate_config({
+        "provider": target.get("provider", ""),
+        "api_key": target.get("api_key", ""),
+        "base_url": target.get("base_url", ""),
+        "model": target.get("model", ""),
+        "max_tokens": target.get("max_tokens", 1024),
+    })
+    target["last_check"] = result
+    _normalize_profile_meta(target)
+    _save_profiles(db, profiles, active_id)
+    db.commit()
+    return {"active_profile_id": active_id, "profiles": profiles}
 
 
 @router.get("/llm/runtime")
@@ -268,6 +329,11 @@ def get_llm_runtime(db: Session = Depends(get_db)):
         "runtime_base_url": runtime.get("base_url", ""),
         "is_consistent": bool(active) and active.get("provider", "") == runtime.get("provider", "") and active.get("model", "") == runtime.get("model", ""),
     }
+
+
+@router.get("/llm/call-logs")
+def get_llm_call_logs(limit: int = 50):
+    return {"logs": llm_service.get_call_logs(limit=limit)}
 
 
 # 兼容旧接口（默认读/写当前活动配置）

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>模型配置中心</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+  <div class="max-w-6xl mx-auto px-4 py-6">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h1 class="text-2xl font-bold text-gray-800">模型配置中心</h1>
+        <p class="text-sm text-gray-600 mt-1">独立配置页：卡片管理 + 健康检查 + 调用日志</p>
+      </div>
+      <div class="flex gap-2">
+        <a href="/" class="px-3 py-2 border rounded hover:bg-gray-100 text-sm">返回创作页</a>
+        <button id="btnRefresh" class="px-3 py-2 border rounded hover:bg-gray-100 text-sm">刷新</button>
+        <button id="btnAdd" class="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm">新增配置</button>
+      </div>
+    </div>
+
+    <div id="runtimeBadge" class="mb-4 p-3 rounded bg-white border text-sm text-gray-700">运行时：加载中...</div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="profileCards"></div>
+
+    <div class="mt-6 bg-white border rounded p-4">
+      <h2 class="font-semibold text-gray-800 mb-2">最近调用日志</h2>
+      <div id="callLogs" class="space-y-1 text-xs max-h-64 overflow-y-auto text-gray-700"></div>
+    </div>
+  </div>
+
+  <div id="editorModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-lg p-5 w-full max-w-2xl mx-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 id="editorTitle" class="text-lg font-semibold">新增配置</h3>
+        <button id="btnClose" class="text-gray-500 hover:text-gray-700 text-xl">&times;</button>
+      </div>
+      <form id="editorForm" class="space-y-3">
+        <input type="hidden" id="profileId" />
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">配置名称</label>
+          <input id="name" class="w-full px-3 py-2 border rounded" required />
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-sm text-gray-700 mb-1">Provider</label>
+            <select id="provider" class="w-full px-3 py-2 border rounded">
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI / Compatible</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-700 mb-1">Max Tokens</label>
+            <input id="max_tokens" type="number" min="256" max="128000" step="256" value="4096" class="w-full px-3 py-2 border rounded" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">API Key</label>
+          <input id="api_key" class="w-full px-3 py-2 border rounded" required />
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Base URL</label>
+          <input id="base_url" class="w-full px-3 py-2 border rounded" />
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Model</label>
+          <input id="model" class="w-full px-3 py-2 border rounded" required />
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <button type="button" id="btnCancel" class="px-3 py-2 border rounded hover:bg-gray-100">取消</button>
+          <button type="button" id="btnValidate" class="px-3 py-2 border rounded text-indigo-700 hover:bg-indigo-50">先校验</button>
+          <button type="submit" class="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">保存</button>
+        </div>
+        <div id="validateResult" class="text-sm text-gray-600"></div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/js/model_center.js"></script>
+</body>
+</html>

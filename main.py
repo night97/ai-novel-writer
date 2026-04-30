@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 
 from app.database import engine, Base, SessionLocal
-from app.routes import projects, characters, outline, write, settings
+from app.routes import projects, characters, outline, write, settings, workbench
 from app.routes.settings import sync_llm_runtime_with_active_profile
 
 # 创建数据库表
@@ -33,6 +33,7 @@ app.include_router(characters.router)
 app.include_router(outline.router)
 app.include_router(write.router)
 app.include_router(settings.router)
+app.include_router(workbench.router)
 
 # 静态文件
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -41,6 +42,10 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/")
 async def read_index():
     return FileResponse("templates/index.html")
+
+@app.get("/model-center")
+async def read_model_center():
+    return FileResponse("templates/model_center.html")
 
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
