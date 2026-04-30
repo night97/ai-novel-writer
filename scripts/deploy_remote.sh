@@ -3,6 +3,15 @@ set -euo pipefail
 
 cd "${DEPLOY_PATH}"
 
+mkdir -p .deploy_backups
+ts="$(date +%Y%m%d-%H%M%S)"
+if [[ -f "novel_writer.db" ]]; then
+  cp -f "novel_writer.db" ".deploy_backups/novel_writer.db.${ts}.bak"
+fi
+if [[ -f ".env" ]]; then
+  cp -f ".env" ".deploy_backups/.env.${ts}.bak"
+fi
+
 if [[ ! -d ".venv" ]]; then
   python3 -m venv .venv
 fi
@@ -12,7 +21,9 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 
 if [[ -n "${APP_ENV_FILE_CONTENT:-}" ]]; then
-  printf "%s\n" "${APP_ENV_FILE_CONTENT}" > .env
+  if [[ ! -f ".env" ]]; then
+    printf "%s\n" "${APP_ENV_FILE_CONTENT}" > .env
+  fi
 fi
 
 touch novel_writer.db

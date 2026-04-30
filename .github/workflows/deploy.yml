@@ -51,6 +51,8 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
           rsync -az --delete -e "ssh -p ${DEPLOY_PORT}" \
+            --filter "P .env" \
+            --filter "P novel_writer.db" \
             --exclude ".git/" \
             --exclude ".github/" \
             --exclude ".venv/" \
