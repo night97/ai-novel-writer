@@ -34,12 +34,19 @@ jobs:
       - name: Setup SSH Key
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_KEY_BASE64: ${{ secrets.DEPLOY_SSH_KEY_BASE64 }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf "%s" "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          if [ -n "${DEPLOY_SSH_KEY_BASE64:-}" ]; then
+            printf "%s" "$DEPLOY_SSH_KEY_BASE64" | base64 -d > ~/.ssh/id_ed25519
+          else
+            printf "%s\n" "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          fi
+          sed -i 's/\r$//' ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
