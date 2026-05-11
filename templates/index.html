@@ -2,7 +2,10 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="format-detection" content="telephone=no">
     <title>AI 小说写作工具</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -12,8 +15,18 @@
         }
     </script>
     <style>
+        :root {
+            --sat: env(safe-area-inset-top, 0px);
+            --sab: env(safe-area-inset-bottom, 0px);
+            --sal: env(safe-area-inset-left, 0px);
+            --sar: env(safe-area-inset-right, 0px);
+        }
+        
         .safe-bottom {
-            padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
+            padding-bottom: calc(var(--sab) + 8px);
+        }
+        .safe-top {
+            padding-top: var(--sat);
         }
         .hide-scrollbar::-webkit-scrollbar {
             display: none;
@@ -22,39 +35,156 @@
             -ms-overflow-style: none;
             scrollbar-width: none;
         }
+        .reader-content p {
+            margin: 0.05em 0 !important;
+            text-indent: 2em;
+        }
+        .reader-content h1,
+        .reader-content h2,
+        .reader-content h3 {
+            margin: 1.1em 0 0.7em;
+            font-weight: 700;
+        }
+        .reader-content blockquote {
+            margin: 1em 0;
+            padding: 0.65em 0.9em;
+            border-left: 3px solid #c7d2fe;
+            background: #eef2ff;
+            color: #374151;
+            border-radius: 0.5rem;
+        }
+        .reader-content pre {
+            white-space: pre-wrap;
+        }
+        
+        /* Mobile-specific optimizations */
+        @media (max-width: 768px) {
+            /* Prevent double-tap zoom on buttons */
+            button, a, input, select, textarea {
+                touch-action: manipulation;
+            }
+            
+            /* Better tap targets */
+            .mobile-tap-target {
+                min-height: 44px;
+                min-width: 44px;
+            }
+            
+            /* Smooth scrolling */
+            .mobile-scroll {
+                -webkit-overflow-scrolling: touch;
+                overflow-y: auto;
+            }
+            
+            /* Mobile nav improvements */
+            .mobile-nav-scroll {
+                scroll-snap-type: x mandatory;
+                -webkit-overflow-scrolling: touch;
+            }
+            .mobile-nav-scroll > button {
+                scroll-snap-align: start;
+            }
+            
+            /* Mobile modal */
+            .mobile-modal {
+                max-height: calc(100vh - var(--sat) - var(--sab));
+                max-height: calc(100dvh - var(--sat) - var(--sab));
+            }
+            
+            /* Mobile-friendly form inputs */
+            input[type="text"],
+            input[type="number"],
+            input[type="email"],
+            select,
+            textarea {
+                font-size: 16px !important; /* Prevent zoom on focus */
+            }
+            
+            /* Better spacing for mobile */
+            .mobile-p {
+                padding: 12px 16px;
+            }
+            
+            /* Project list toggle */
+            .project-list-mobile {
+                max-height: 0;
+                overflow: hidden;
+                transition: max-height 0.3s ease-out;
+            }
+            .project-list-mobile.expanded {
+                max-height: 60vh;
+            }
+        }
+        
+        /* Touch device specific */
+        @media (hover: none) and (pointer: coarse) {
+            /* Larger touch targets */
+            button, a {
+                min-height: 44px;
+            }
+            
+            /* Remove hover effects on touch devices */
+            .hover\:bg-gray-100:hover {
+                background-color: transparent;
+            }
+        }
     </style>
 </head>
 <body class="bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
     <div class="min-h-screen">
         <!-- 顶部导航 -->
-        <nav class="bg-indigo-600 text-white shadow-lg">
-            <div class="max-w-7xl mx-auto px-3 md:px-4 py-3 flex justify-between items-start md:items-center gap-2">
-                <div>
-                    <h1 class="text-lg md:text-xl font-bold">AI 小说写作工具</h1>
-                    <p class="text-xs md:text-sm opacity-80 hidden sm:block">自动网络小说创作助手 · 逐卷生成 · 支持百万字长篇</p>
-                    <p id="activeModelBadge" class="text-xs opacity-90 mt-1">当前模型：加载中...</p>
-                </div>
-                <div class="flex items-center gap-2 shrink-0">
-                    <a href="/model-center" class="px-2.5 md:px-3 py-1.5 bg-white bg-opacity-20 rounded hover:bg-opacity-30 transition text-xs md:text-sm inline-block">
-                        模型设置
-                    </a>
-                    <button onclick="toggleTheme()" class="px-2.5 md:px-3 py-1.5 bg-white bg-opacity-20 rounded hover:bg-opacity-30 transition text-xs md:text-sm">
-                        <span id="themeText">🌙 深色</span>
-                    </button>
+        <nav class="bg-indigo-600 text-white shadow-lg safe-top">
+            <div class="max-w-7xl mx-auto px-3 md:px-4 py-2 md:py-3">
+                <div class="flex justify-between items-center gap-2">
+                    <div class="flex-1 min-w-0">
+                        <h1 class="text-base md:text-xl font-bold truncate">AI 小说写作工具</h1>
+                        <p id="activeModelBadge" class="text-[10px] md:text-xs opacity-90 truncate">当前模型：加载中...</p>
+                    </div>
+                    <div class="flex items-center gap-1.5 md:gap-2 shrink-0">
+                        <a href="/model-center" class="px-2 md:px-3 py-1.5 bg-white bg-opacity-20 rounded text-xs md:text-sm mobile-tap-target flex items-center">
+                            <span class="hidden sm:inline">模型设置</span>
+                            <span class="sm:hidden">模型</span>
+                        </a>
+                        <button onclick="toggleTheme()" class="px-2 md:px-3 py-1.5 bg-white bg-opacity-20 rounded text-xs md:text-sm mobile-tap-target">
+                            <span id="themeText">🌙</span>
+                        </button>
+                    </div>
                 </div>
             </div>
         </nav>
 
-        <div class="max-w-7xl mx-auto px-3 md:px-4 py-4 md:py-6">
-            <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                <!-- 左侧：项目列表 -->
-                <div class="lg:col-span-1">
-                    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-                        <h2 class="text-lg font-semibold mb-4">项目列表</h2>
-                        <button onclick="showCreateProject()" class="w-full bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 transition mb-4">
+        <div class="max-w-7xl mx-auto px-3 md:px-4 py-3 md:py-6">
+            <!-- Mobile: Project Toggle Button -->
+            <div class="lg:hidden mb-3">
+                <button onclick="toggleMobileProjectList()" class="w-full flex items-center justify-between bg-white dark:bg-gray-800 rounded-lg shadow px-4 py-3 mobile-tap-target">
+                    <span class="font-medium text-gray-800 dark:text-gray-200">
+                        <span id="mobileProjectTitle">项目列表</span>
+                    </span>
+                    <svg id="mobileProjectArrow" class="w-5 h-5 text-gray-500 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                    </svg>
+                </button>
+                <div id="mobileProjectList" class="project-list-mobile bg-white dark:bg-gray-800 rounded-lg shadow mt-1 overflow-hidden">
+                    <div class="p-3 space-y-2 mobile-scroll" style="max-height: 50vh;">
+                        <button onclick="showCreateProject()" class="w-full bg-indigo-600 text-white px-4 py-2.5 rounded mobile-tap-target text-sm">
                             + 新建项目
                         </button>
-                        <div id="projectList" class="space-y-2 max-h-[500px] overflow-y-auto">
+                        <div id="projectListMobile" class="space-y-2">
+                            <!-- 移动端项目列表 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6">
+                <!-- Desktop: 左侧项目列表 -->
+                <div class="hidden lg:block lg:col-span-1">
+                    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4 sticky top-4">
+                        <h2 class="text-lg font-semibold mb-4">项目列表</h2>
+                        <button onclick="showCreateProject()" class="w-full bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 transition mb-4 mobile-tap-target">
+                            + 新建项目
+                        </button>
+                        <div id="projectList" class="space-y-2 max-h-[calc(100vh-200px)] overflow-y-auto">
                             <!-- 项目列表由JS填充 -->
                         </div>
                     </div>
@@ -62,14 +192,14 @@
 
                 <!-- 右侧：主内容区 -->
                 <div class="lg:col-span-3">
-                    <div id="mainContent" class="space-y-4">
+                    <div id="mainContent" class="space-y-3 md:space-y-4">
                         <!-- 欢迎提示 -->
-                        <div class="bg-white rounded-lg shadow p-6 text-center">
-                            <h2 class="text-2xl font-bold text-gray-800 mb-3">欢迎使用 AI 小说写作工具</h2>
-                            <p class="text-gray-600 mb-4">从左侧选择一个项目或创建新项目开始创作</p>
-                            <div class="text-left bg-gray-50 p-4 rounded max-w-2xl mx-auto">
-                                <h3 class="font-semibold mb-2">创作流程：</h3>
-                                <ol class="list-decimal list-inside space-y-1 text-gray-700">
+                        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4 md:p-6 text-center">
+                            <h2 class="text-xl md:text-2xl font-bold text-gray-800 dark:text-gray-200 mb-3">欢迎使用 AI 小说写作工具</h2>
+                            <p class="text-sm md:text-base text-gray-600 dark:text-gray-400 mb-4">选择一个项目或创建新项目开始创作</p>
+                            <div class="text-left bg-gray-50 dark:bg-gray-700 p-3 md:p-4 rounded max-w-2xl mx-auto">
+                                <h3 class="font-semibold mb-2 text-sm md:text-base">创作流程：</h3>
+                                <ol class="list-decimal list-inside space-y-1 text-sm md:text-base text-gray-700 dark:text-gray-300">
                                     <li>创建项目，填写小说基本信息</li>
                                     <li>AI 生成世界观设定（可手动修改）</li>
                                     <li>AI 生成角色（可手动修改）</li>
@@ -86,18 +216,18 @@
     </div>
 
     <!-- 创建项目弹窗 -->
-    <div id="createProjectModal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
-        <div class="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <h2 class="text-xl font-bold mb-4">创建新项目</h2>
+    <div id="createProjectModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-end md:items-center justify-center z-50">
+        <div class="bg-white dark:bg-gray-800 rounded-t-xl md:rounded-lg p-4 md:p-6 max-w-2xl w-full max-h-[90vh] md:mx-4 overflow-y-auto mobile-modal">
+            <h2 class="text-lg md:text-xl font-bold mb-4 text-gray-800 dark:text-gray-200">创建新项目</h2>
             <form id="createProjectForm" onsubmit="createProject(event)">
-                <div class="space-y-4">
+                <div class="space-y-3 md:space-y-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">小说标题</label>
-                        <input type="text" id="projectTitle" required class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">小说标题</label>
+                        <input type="text" id="projectTitle" required class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">流派</label>
-                        <select id="projectGenre" required class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">流派</label>
+                        <select id="projectGenre" required class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                             <option value="玄幻">玄幻</option>
                             <option value="修仙">修仙</option>
                             <option value="都市">都市</option>
@@ -111,116 +241,116 @@
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">描述/创作需求</label>
-                        <textarea id="projectDescription" rows="4" placeholder="比如：主角穿越到玄幻世界，获得一个能抽奖的系统，开局获得神级血脉..." class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">描述/创作需求</label>
+                        <textarea id="projectDescription" rows="3" placeholder="比如：主角穿越到玄幻世界，获得一个能抽奖的系统，开局获得神级血脉..." class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base"></textarea>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">每章目标字数</label>
-                        <input type="number" id="targetWords" value="2000" min="500" max="10000" step="500" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">每章目标字数</label>
+                        <input type="number" id="targetWords" value="2000" min="500" max="10000" step="500" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                     </div>
                     <div class="flex items-center">
-                        <input type="checkbox" id="enableReview" class="mr-2">
-                        <label for="enableReview" class="text-sm text-gray-700">启用审查功能（生成后自动检查，会增加token消耗）</label>
+                        <input type="checkbox" id="enableReview" class="mr-2 w-4 h-4">
+                        <label for="enableReview" class="text-sm text-gray-700 dark:text-gray-300">启用审查功能（生成后自动检查，会增加token消耗）</label>
                     </div>
                 </div>
-                <div class="flex justify-end space-x-3 mt-6">
-                    <button type="button" onclick="hideCreateProject()" class="px-4 py-2 text-gray-600 border rounded hover:bg-gray-50 transition">取消</button>
-                    <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">创建</button>
+                <div class="flex justify-end gap-3 mt-6 safe-bottom">
+                    <button type="button" onclick="hideCreateProject()" class="px-4 py-2.5 text-gray-600 dark:text-gray-400 border rounded mobile-tap-target">取消</button>
+                    <button type="submit" class="px-4 py-2.5 bg-indigo-600 text-white rounded mobile-tap-target">创建</button>
                 </div>
             </form>
         </div>
     </div>
 
     <!-- 编辑角色弹窗 -->
-    <div id="editCharacterModal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
-        <div class="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <h2 class="text-xl font-bold mb-4">编辑角色</h2>
+    <div id="editCharacterModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-end md:items-center justify-center z-50">
+        <div class="bg-white dark:bg-gray-800 rounded-t-xl md:rounded-lg p-4 md:p-6 max-w-2xl w-full max-h-[90vh] md:mx-4 overflow-y-auto mobile-modal">
+            <h2 class="text-lg md:text-xl font-bold mb-4 text-gray-800 dark:text-gray-200">编辑角色</h2>
             <form id="editCharacterForm" onsubmit="saveCharacter(event)">
                 <input type="hidden" id="editCharacterId">
-                <div class="space-y-4">
+                <div class="space-y-3 md:space-y-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">角色姓名</label>
-                        <input type="text" id="editCharacterName" required class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">角色姓名</label>
+                        <input type="text" id="editCharacterName" required class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">角色定位/身份</label>
-                        <input type="text" id="editCharacterRole" placeholder="比如：主角/反派/主角父亲/宗门长老..." class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">角色定位/身份</label>
+                        <input type="text" id="editCharacterRole" placeholder="比如：主角/反派/主角父亲/宗门长老..." class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">外貌描述</label>
-                        <input type="text" id="editCharacterAvatar" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">外貌描述</label>
+                        <input type="text" id="editCharacterAvatar" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">性格特点</label>
-                        <textarea id="editCharacterPersonality" rows="2" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">性格特点</label>
+                        <textarea id="editCharacterPersonality" rows="2" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base"></textarea>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">背景故事</label>
-                        <textarea id="editCharacterBackground" rows="3" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">背景故事</label>
+                        <textarea id="editCharacterBackground" rows="3" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base"></textarea>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">能力特长</label>
-                        <input type="text" id="editCharacterAbilities" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">能力特长</label>
+                        <input type="text" id="editCharacterAbilities" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">角色关系</label>
-                        <textarea id="editCharacterRelationships" rows="2" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">角色关系</label>
+                        <textarea id="editCharacterRelationships" rows="2" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base"></textarea>
                     </div>
                     <div class="flex items-center">
-                        <input type="checkbox" id="editCharacterIsMain" class="mr-2">
-                        <label for="editCharacterIsMain" class="text-sm text-gray-700">这是主角</label>
+                        <input type="checkbox" id="editCharacterIsMain" class="mr-2 w-4 h-4">
+                        <label for="editCharacterIsMain" class="text-sm text-gray-700 dark:text-gray-300">这是主角</label>
                     </div>
                 </div>
-                <div class="flex justify-end space-x-3 mt-6">
-                    <button type="button" onclick="hideEditCharacter()" class="px-4 py-2 text-gray-600 border rounded hover:bg-gray-50 transition">取消</button>
-                    <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">保存</button>
+                <div class="flex justify-end gap-3 mt-6 safe-bottom">
+                    <button type="button" onclick="hideEditCharacter()" class="px-4 py-2.5 text-gray-600 dark:text-gray-400 border rounded mobile-tap-target">取消</button>
+                    <button type="submit" class="px-4 py-2.5 bg-indigo-600 text-white rounded mobile-tap-target">保存</button>
                 </div>
             </form>
         </div>
     </div>
 
     <!-- 添加角色按钮 -->
-    <div class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50" id="addCharacterModal">
-        <div class="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <h2 class="text-xl font-bold mb-4">添加角色</h2>
+    <div class="fixed inset-0 bg-black bg-opacity-50 hidden items-end md:items-center justify-center z-50" id="addCharacterModal">
+        <div class="bg-white dark:bg-gray-800 rounded-t-xl md:rounded-lg p-4 md:p-6 max-w-2xl w-full max-h-[90vh] md:mx-4 overflow-y-auto mobile-modal">
+            <h2 class="text-lg md:text-xl font-bold mb-4 text-gray-800 dark:text-gray-200">添加角色</h2>
             <form id="addCharacterForm" onsubmit="saveNewCharacter(event)">
-                <div class="space-y-4">
+                <div class="space-y-3 md:space-y-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">角色姓名</label>
-                        <input type="text" id="addCharacterName" required class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">角色姓名</label>
+                        <input type="text" id="addCharacterName" required class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">角色定位/身份</label>
-                        <input type="text" id="addCharacterRole" placeholder="比如：主角/反派/主角父亲/宗门长老..." class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">角色定位/身份</label>
+                        <input type="text" id="addCharacterRole" placeholder="比如：主角/反派/主角父亲/宗门长老..." class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">外貌描述</label>
-                        <input type="text" id="addCharacterAvatar" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">外貌描述</label>
+                        <input type="text" id="addCharacterAvatar" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">性格特点</label>
-                        <textarea id="addCharacterPersonality" rows="2" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">性格特点</label>
+                        <textarea id="addCharacterPersonality" rows="2" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base"></textarea>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">背景故事</label>
-                        <textarea id="addCharacterBackground" rows="3" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">背景故事</label>
+                        <textarea id="addCharacterBackground" rows="3" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base"></textarea>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">能力特长</label>
-                        <input type="text" id="addCharacterAbilities" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">能力特长</label>
+                        <input type="text" id="addCharacterAbilities" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">角色关系</label>
-                        <textarea id="addCharacterRelationships" rows="2" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">角色关系</label>
+                        <textarea id="addCharacterRelationships" rows="2" class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 text-base"></textarea>
                     </div>
                     <div class="flex items-center">
-                        <input type="checkbox" id="addCharacterIsMain" class="mr-2">
-                        <label for="addCharacterIsMain" class="text-sm text-gray-700">这是主角</label>
+                        <input type="checkbox" id="addCharacterIsMain" class="mr-2 w-4 h-4">
+                        <label for="addCharacterIsMain" class="text-sm text-gray-700 dark:text-gray-300">这是主角</label>
                     </div>
                 </div>
-                <div class="flex justify-end space-x-3 mt-6">
-                    <button type="button" onclick="hideAddCharacter()" class="px-4 py-2 text-gray-600 border rounded hover:bg-gray-50 transition">取消</button>
-                    <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">添加</button>
+                <div class="flex justify-end gap-3 mt-6 safe-bottom">
+                    <button type="button" onclick="hideAddCharacter()" class="px-4 py-2.5 text-gray-600 dark:text-gray-400 border rounded mobile-tap-target">取消</button>
+                    <button type="submit" class="px-4 py-2.5 bg-indigo-600 text-white rounded mobile-tap-target">添加</button>
                 </div>
             </form>
         </div>

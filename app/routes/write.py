@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Optional
 from app.database import get_db
 import json
 import re
+import uuid
+import threading
 from app.models.models import NovelProject, WorldSetting, Character, Chapter, Volume, CharacterRelationship, ProjectCreativeProfile, AppConfig
 from app.models.schemas import ChapterResponse, GenerateChapterRequest, RegenerateChapterRequest
 from app.services.llm_service import llm_service
@@ -13,6 +15,10 @@ from openai import APITimeoutError, APIConnectionError
 from app.routes.settings import sync_llm_runtime_with_active_profile
 
 router = APIRouter(prefix="/api/write", tags=["write"])
+
+# 异步任务存储
+batch_tasks: Dict[str, dict] = {}
+batch_tasks_lock = threading.Lock()
 
 def _format_character_line(char: Character) -> str:
     parts = [f"- {char.name}"]
@@ -108,7 +114,7 @@ def _parse_target_words_from_reference(word_ref: str, fallback: int) -> int:
     return fallback
 
 
-def _resolve_target_words(project: NovelProject, chapter: Chapter, request_target_words: int | None) -> int:
+def _resolve_target_words(project: NovelProject, chapter: Chapter, request_target_words: Optional[int]) -> int:
     """目标字数优先级：请求参数 > 章节配置 > 项目默认"""
     default_words = int(project.target_words_per_chapter or 2000)
 
@@ -413,16 +419,94 @@ def regenerate_chapter(chapter_id: int, request: RegenerateChapterRequest, db: S
 class BatchGenerateChaptersRequest(BaseModel):
     project_id: int
     volume_id: int
-    start_chapter: int | None = None
-    end_chapter: int | None = None
+    start_chapter: Optional[int] = None
+    end_chapter: Optional[int] = None
     batch_size: int = 5
-    target_words: int | None = None
+    target_words: Optional[int] = None
     regenerate_existing: bool = False
+
+
+def _run_batch_generate_task(task_id: str, project_id: int, volume_id: int, chapters: list, target_words: Optional[int]):
+    """后台线程执行批量生成"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+
+    try:
+        project = db.query(NovelProject).filter(NovelProject.id == project_id).first()
+        if not project:
+            with batch_tasks_lock:
+                batch_tasks[task_id]["status"] = "failed"
+                batch_tasks[task_id]["error"] = "项目不存在"
+            return
+
+        total = len(chapters)
+        with batch_tasks_lock:
+            batch_tasks[task_id]["total"] = total
+            batch_tasks[task_id]["status"] = "running"
+
+        for i, ch_data in enumerate(chapters):
+            chapter_id = ch_data["chapter_id"]
+            chapter_index = ch_data["chapter_index"]
+
+            # 更新进度
+            with batch_tasks_lock:
+                batch_tasks[task_id]["current"] = i + 1
+                batch_tasks[task_id]["current_chapter"] = chapter_index
+                batch_tasks[task_id]["message"] = f"正在生成第{chapter_index}章（{i+1}/{total}）..."
+
+            chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+            if not chapter:
+                with batch_tasks_lock:
+                    batch_tasks[task_id]["failed"].append({
+                        "chapter_id": chapter_id,
+                        "chapter_index": chapter_index,
+                        "title": "",
+                        "error": "章节不存在"
+                    })
+                continue
+
+            tw = target_words
+            if not tw or tw <= 0:
+                tw = chapter.target_words if chapter.target_words and chapter.target_words > 0 else None
+
+            try:
+                _generate_and_save_chapter(
+                    db=db,
+                    project=project,
+                    chapter=chapter,
+                    project_id=project_id,
+                    target_words=tw or 2000,
+                    append_user_prompt="",
+                    extract_entities=False
+                )
+                with batch_tasks_lock:
+                    batch_tasks[task_id]["generated_count"] += 1
+                    batch_tasks[task_id]["generated_chapter_ids"].append(chapter_id)
+            except Exception as e:
+                db.rollback()
+                with batch_tasks_lock:
+                    batch_tasks[task_id]["failed"].append({
+                        "chapter_id": chapter_id,
+                        "chapter_index": chapter_index,
+                        "title": chapter.title or "",
+                        "error": str(e)[:300]
+                    })
+
+        with batch_tasks_lock:
+            batch_tasks[task_id]["status"] = "completed"
+            batch_tasks[task_id]["message"] = f"批量生成完成：成功 {batch_tasks[task_id]['generated_count']} 章，失败 {len(batch_tasks[task_id]['failed'])} 章"
+
+    except Exception as e:
+        with batch_tasks_lock:
+            batch_tasks[task_id]["status"] = "failed"
+            batch_tasks[task_id]["error"] = str(e)[:300]
+    finally:
+        db.close()
 
 
 @router.post("/batch-generate")
 def batch_generate_chapters(request: BatchGenerateChaptersRequest, db: Session = Depends(get_db)):
-    """批量顺序生成正文：逐章入库，保证上下文连续；下一批可继承前批内容"""
+    """异步批量生成正文：立即返回任务ID，后台逐章生成"""
     project = db.query(NovelProject).filter(NovelProject.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -457,52 +541,66 @@ def batch_generate_chapters(request: BatchGenerateChaptersRequest, db: Session =
 
     if not chapters:
         return {
+            "task_id": None,
             "success": True,
             "message": "所选范围内没有需要生成的章节",
-            "generated_count": 0,
-            "failed_count": 0,
-            "generated_chapter_ids": [],
-            "failed": []
+            "total": 0
         }
 
-    # 推荐每批 5 章：兼顾稳定性/速度/连续性
+    # 使用 batch_size 限制本批生成数量
     batch_size = max(1, min(10, int(request.batch_size or 5)))
-    generated_ids: List[int] = []
-    failed = []
+    chapters = chapters[:batch_size]
 
-    for i in range(0, len(chapters), batch_size):
-        chunk = chapters[i:i + batch_size]
-        for ch in chunk:
-            target_words = _resolve_target_words(project, ch, request.target_words)
-            try:
-                _generate_and_save_chapter(
-                    db=db,
-                    project=project,
-                    chapter=ch,
-                    project_id=request.project_id,
-                    target_words=target_words,
-                    append_user_prompt="",
-                    extract_entities=False  # 批量模式优先速度；RAG索引已构建，跨批可连贯
-                )
-                generated_ids.append(ch.id)
-            except Exception as e:
-                db.rollback()
-                failed.append({
-                    "chapter_id": ch.id,
-                    "chapter_index": ch.chapter_index,
-                    "title": ch.title,
-                    "error": str(e)[:300]
-                })
+    # 准备章节数据
+    chapters_data = [{
+        "chapter_id": c.id,
+        "chapter_index": c.chapter_index,
+        "title": c.title or ""
+    } for c in chapters]
+
+    # 创建任务
+    task_id = str(uuid.uuid4())
+    with batch_tasks_lock:
+        batch_tasks[task_id] = {
+            "task_id": task_id,
+            "status": "pending",
+            "total": len(chapters),
+            "current": 0,
+            "current_chapter": 0,
+            "generated_count": 0,
+            "generated_chapter_ids": [],
+            "failed": [],
+            "message": "任务已创建，等待执行...",
+            "error": None
+        }
+
+    # 启动后台线程
+    target_words = request.target_words
+    thread = threading.Thread(
+        target=_run_batch_generate_task,
+        args=(task_id, request.project_id, request.volume_id, chapters_data, target_words),
+        daemon=True
+    )
+    thread.start()
 
     return {
-        "success": len(generated_ids) > 0,
-        "message": f"批量生成完成：成功 {len(generated_ids)} 章，失败 {len(failed)} 章",
-        "generated_count": len(generated_ids),
-        "failed_count": len(failed),
-        "generated_chapter_ids": generated_ids,
-        "failed": failed,
-        "recommended_batch_size": 5
+        "task_id": task_id,
+        "success": True,
+        "message": f"批量生成任务已启动，共 {len(chapters)} 章",
+        "total": len(chapters)
     }
+
+
+@router.get("/batch-progress/{task_id}")
+def get_batch_progress(task_id: str):
+    """查询批量生成任务进度"""
+    with batch_tasks_lock:
+        task = batch_tasks.get(task_id)
+
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    return task
 
 @router.get("/chapter/{chapter_id}", response_model=ChapterResponse)
 def get_chapter(chapter_id: int, db: Session = Depends(get_db)):

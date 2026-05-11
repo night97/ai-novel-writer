@@ -6,6 +6,53 @@ let currentChatModule = 'master_outline';
 let mobileChatVersionsCache = [];
 let outlineViewMode = 'volume';
 let outlineVolumeProgressCache = [];
+let mobileProjectListExpanded = false;
+const TAB_DEFS = [
+    { key: 'world', label: '1. 题材定位', minWidth: 112 },
+    { key: 'master_outline', label: '2. 总纲', minWidth: 92 },
+    { key: 'characters', label: '3. 角色', minWidth: 92 },
+    { key: 'outline', label: '4. 卷纲', minWidth: 92 },
+    { key: 'write', label: '5. 写作', minWidth: 92 },
+    { key: 'read', label: '6. 阅读', minWidth: 92 },
+    { key: 'export', label: '7. 导出', minWidth: 92 }
+];
+const TAB_STYLE_ACTIVE = 'py-3 px-4 font-medium bg-indigo-50 text-indigo-600 border-b-2 border-indigo-600';
+const TAB_STYLE_INACTIVE = 'py-3 px-4 font-medium text-gray-500 hover:bg-gray-50';
+
+let readingState = {
+    projectId: null,
+    chapters: [],
+    currentChapterId: null,
+    mobileTocOpen: false,
+    loading: false,
+    settings: loadReaderSettings()
+};
+
+function loadReaderSettings() {
+    try {
+        const raw = localStorage.getItem('readerSettingsV1');
+        const parsed = raw ? JSON.parse(raw) : {};
+        return {
+            fontSize: Number(parsed.fontSize) || 20,
+            lineHeight: Number(parsed.lineHeight) || 1.95,
+            width: Number(parsed.width) || 840
+        };
+    } catch (e) {
+        return {
+            fontSize: 20,
+            lineHeight: 1.95,
+            width: 840
+        };
+    }
+}
+
+function persistReaderSettings() {
+    try {
+        localStorage.setItem('readerSettingsV1', JSON.stringify(readingState.settings || {}));
+    } catch (e) {
+        console.warn('保存阅读设置失败', e);
+    }
+}
 
 // ========== 统一弹窗 ==========
 function ensureUiModalHost() {
@@ -121,19 +168,51 @@ function applyTheme() {
         document.documentElement.classList.add('dark');
         const themeText = document.getElementById('themeText');
         if (themeText) {
-            themeText.textContent = '☀️ 浅色';
+            themeText.textContent = '☀️';
         }
     } else {
         document.documentElement.classList.remove('dark');
         const themeText = document.getElementById('themeText');
         if (themeText) {
-            themeText.textContent = '🌙 深色';
+            themeText.textContent = '🌙';
         }
     }
 }
 
 // DOM加载后应用保存的主题
 document.addEventListener('DOMContentLoaded', applyTheme);
+
+// ========== 移动端项目列表切换 ==========
+function toggleMobileProjectList() {
+    mobileProjectListExpanded = !mobileProjectListExpanded;
+    const list = document.getElementById('mobileProjectList');
+    const arrow = document.getElementById('mobileProjectArrow');
+    if (list) {
+        if (mobileProjectListExpanded) {
+            list.classList.add('expanded');
+        } else {
+            list.classList.remove('expanded');
+        }
+    }
+    if (arrow) {
+        arrow.style.transform = mobileProjectListExpanded ? 'rotate(180deg)' : '';
+    }
+}
+
+function closeMobileProjectList() {
+    mobileProjectListExpanded = false;
+    const list = document.getElementById('mobileProjectList');
+    const arrow = document.getElementById('mobileProjectArrow');
+    if (list) list.classList.remove('expanded');
+    if (arrow) arrow.style.transform = '';
+}
+
+function updateMobileProjectTitle(title) {
+    const el = document.getElementById('mobileProjectTitle');
+    if (el) {
+        el.textContent = title || '项目列表';
+    }
+}
 
 // 页面加载时获取项目列表
 document.addEventListener('DOMContentLoaded', () => {
@@ -182,18 +261,39 @@ function hideLoading(element, text) {
 async function loadProjects() {
     try {
         const projects = await apiRequest('/api/projects/');
-        const listEl = document.getElementById('projectList');
-        listEl.innerHTML = '';
-        projects.forEach(p => {
+        
+        // 渲染项目卡片的函数
+        const renderProjectItem = (p, isMobile = false) => {
             const item = document.createElement('div');
-            item.className = `p-2 border rounded cursor-pointer hover:bg-indigo-50 transition ${currentProject && currentProject.id === p.id ? 'bg-indigo-100 border-indigo-500' : ''}`;
+            item.className = `p-2.5 md:p-2 border rounded cursor-pointer transition mobile-tap-target ${currentProject && currentProject.id === p.id ? 'bg-indigo-100 border-indigo-500 dark:bg-indigo-900 dark:border-indigo-400' : 'hover:bg-indigo-50 dark:hover:bg-gray-700'}`;
             item.innerHTML = `
-                <div class="font-medium">${escapeHtml(p.title)}</div>
-                <div class="text-xs text-gray-500">${p.genre} · ${new Date(p.updated_at).toLocaleDateString()}</div>
+                <div class="font-medium text-sm md:text-base truncate text-gray-800 dark:text-gray-200">${escapeHtml(p.title)}</div>
+                <div class="text-[10px] md:text-xs text-gray-500 dark:text-gray-400">${p.genre} · ${new Date(p.updated_at).toLocaleDateString()}</div>
             `;
-            item.onclick = () => selectProject(p);
-            listEl.appendChild(item);
-        });
+            item.onclick = () => {
+                selectProject(p);
+                if (isMobile) closeMobileProjectList();
+            };
+            return item;
+        };
+        
+        // 桌面端列表
+        const listEl = document.getElementById('projectList');
+        if (listEl) {
+            listEl.innerHTML = '';
+            projects.forEach(p => listEl.appendChild(renderProjectItem(p, false)));
+        }
+        
+        // 移动端列表
+        const mobileListEl = document.getElementById('projectListMobile');
+        if (mobileListEl) {
+            mobileListEl.innerHTML = '';
+            if (projects.length === 0) {
+                mobileListEl.innerHTML = '<div class="text-sm text-gray-500 text-center py-4">暂无项目</div>';
+            } else {
+                projects.forEach(p => mobileListEl.appendChild(renderProjectItem(p, true)));
+            }
+        }
     } catch (e) {
         console.error('加载项目列表失败', e);
     }
@@ -204,52 +304,46 @@ async function selectProject(project) {
     currentProject = project;
     currentChapter = null;
     currentTab = 'master_outline';
+    updateMobileProjectTitle(project.title);
     loadProjects();
     renderProjectDetail(project);
+    // 滚动到顶部
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // 渲染项目详情
 function renderProjectDetail(project) {
     const content = `
-        <div class="bg-white rounded-lg shadow p-6">
-            <div class="flex justify-between items-start">
-                <div>
-                    <h2 class="text-2xl font-bold text-gray-800">${escapeHtml(project.title)}</h2>
-                    <p class="text-gray-500 mt-1">${project.genre} · ${project.enable_review ? '审查开启' : '审查关闭'} · 每章${project.target_words_per_chapter}字</p>
-                    ${project.description ? `<p class="text-gray-700 mt-2">${escapeHtml(project.description)}</p>` : ''}
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-3 md:p-6">
+            <div class="flex flex-col md:flex-row md:justify-between md:items-start gap-3">
+                <div class="flex-1 min-w-0">
+                    <h2 class="text-xl md:text-2xl font-bold text-gray-800 dark:text-gray-200 truncate">${escapeHtml(project.title)}</h2>
+                    <p class="text-xs md:text-sm text-gray-500 dark:text-gray-400 mt-1">${project.genre} · ${project.enable_review ? '审查开启' : '审查关闭'} · 每章${project.target_words_per_chapter}字</p>
+                    ${project.description ? `<p class="text-sm md:text-base text-gray-700 dark:text-gray-300 mt-2 line-clamp-2 md:line-clamp-none">${escapeHtml(project.description)}</p>` : ''}
                 </div>
-                <div class="flex items-center gap-2">
-                    <button onclick="openProjectChatModal()" class="px-3 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">创作聊天</button>
-                    <button onclick="downloadProjectBundle(${project.id})" class="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 transition">导出JSON</button>
-                    <button onclick="triggerGlobalImportProject()" class="px-3 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 transition">导入JSON</button>
-                    <button onclick="deleteProject(${project.id})" class="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 transition">删除项目</button>
+                <div class="flex flex-wrap items-center gap-1.5 md:gap-2 shrink-0">
+                    <button onclick="openProjectChatModal()" class="px-2.5 md:px-3 py-1.5 bg-indigo-600 text-white rounded text-xs md:text-sm mobile-tap-target">创作聊天</button>
+                    <button onclick="downloadProjectBundle(${project.id})" class="px-2.5 md:px-3 py-1.5 bg-blue-600 text-white rounded text-xs md:text-sm mobile-tap-target">导出</button>
+                    <button onclick="triggerGlobalImportProject()" class="px-2.5 md:px-3 py-1.5 bg-emerald-600 text-white rounded text-xs md:text-sm mobile-tap-target">导入</button>
+                    <button onclick="deleteProject(${project.id})" class="px-2.5 md:px-3 py-1.5 bg-red-600 text-white rounded text-xs md:text-sm mobile-tap-target">删除</button>
                 </div>
             </div>
         </div>
 
         <!-- Tab 导航 -->
-        <div class="bg-white rounded-lg shadow overflow-hidden">
-            <div class="flex border-b overflow-x-auto hide-scrollbar whitespace-nowrap">
-                <button class="shrink-0 min-w-[112px] py-3 px-4 font-medium ${currentTab === 'world' ? 'bg-indigo-50 text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}" onclick="switchTab('world')">
-                    1. 题材定位
-                </button>
-                <button class="shrink-0 min-w-[92px] py-3 px-4 font-medium ${currentTab === 'master_outline' ? 'bg-indigo-50 text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}" onclick="switchTab('master_outline')">
-                    2. 总纲
-                </button>
-                <button class="shrink-0 min-w-[92px] py-3 px-4 font-medium ${currentTab === 'characters' ? 'bg-indigo-50 text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}" onclick="switchTab('characters')">
-                    3. 角色
-                </button>
-                <button class="shrink-0 min-w-[92px] py-3 px-4 font-medium ${currentTab === 'outline' ? 'bg-indigo-50 text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}" onclick="switchTab('outline')">
-                    4. 卷纲
-                </button>
-                <button class="shrink-0 min-w-[92px] py-3 px-4 font-medium ${currentTab === 'write' ? 'bg-indigo-50 text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}" onclick="switchTab('write')">
-                    5. 写作
-                </button>
-                <button class="shrink-0 min-w-[92px] py-3 px-4 font-medium ${currentTab === 'export' ? 'bg-indigo-50 text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}" onclick="switchTab('export')">
-                    6. 导出
-                </button>
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
+            <div class="flex border-b overflow-x-auto hide-scrollbar mobile-nav-scroll whitespace-nowrap px-1" id="projectTabButtons">
+                ${TAB_DEFS.map(tab => `
+                    <button
+                        data-tab-key="${tab.key}"
+                        class="shrink-0 py-2.5 md:py-3 px-3 md:px-4 text-xs md:text-sm font-medium ${currentTab === tab.key ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50 dark:bg-indigo-900/30' : 'text-gray-500 hover:text-gray-700'}"
+                        onclick="switchTab('${tab.key}')"
+                    >
+                        ${tab.label}
+                    </button>
+                `).join('')}
             </div>
-            <div id="tabContent" class="p-4">
+            <div id="tabContent" class="p-3 md:p-4">
                 <!-- 内容由switchTab填充 -->
             </div>
         </div>
@@ -267,43 +361,46 @@ function ensureProjectChatModal() {
     el.id = 'projectChatModal';
     el.className = 'fixed inset-0 z-[90] hidden items-end md:items-center justify-center bg-black/45';
     el.innerHTML = `
-      <div class="w-full md:w-[95%] h-[92vh] md:h-[90vh] rounded-t-2xl md:rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden">
+      <div class="w-full md:w-[95%] h-[92vh] md:h-[90vh] rounded-t-2xl md:rounded-2xl bg-white dark:bg-gray-800 shadow-2xl border border-slate-200 dark:border-gray-700 overflow-hidden">
         <div class="h-full grid grid-cols-1 md:grid-cols-12 min-h-0">
-          <div class="md:col-span-2 border-b md:border-b-0 md:border-r bg-slate-50 min-h-0 overflow-y-auto">
-            <div class="p-3 border-b font-semibold text-slate-800">创作聊天</div>
-            <div id="chatModuleTabs" class="p-2 flex md:flex-col gap-2 overflow-x-auto md:overflow-x-visible hide-scrollbar whitespace-nowrap md:whitespace-normal"></div>
+          <div class="md:col-span-2 border-b md:border-b-0 md:border-r bg-slate-50 dark:bg-gray-700 min-h-0 overflow-y-auto">
+            <div class="p-3 border-b font-semibold text-slate-800 dark:text-slate-200 flex items-center justify-between">
+              <span>创作聊天</span>
+              <button onclick="closeProjectChatModal()" class="md:hidden px-2 py-1 border rounded text-xs mobile-tap-target">关闭</button>
+            </div>
+            <div id="chatModuleTabs" class="p-2 flex md:flex-col gap-1 md:gap-2 overflow-x-auto md:overflow-x-visible hide-scrollbar whitespace-nowrap md:whitespace-normal mobile-scroll"></div>
           </div>
           <div class="md:col-span-7 flex flex-col min-h-0">
-            <div class="px-4 py-3 border-b flex items-center justify-between">
-              <div>
-                <div id="chatModuleTitle" class="font-semibold text-slate-800">总纲聊天</div>
-                <div class="text-xs text-slate-500">对话是主体：继续聊 -> 整理版本 -> 设为正式版</div>
+            <div class="px-3 md:px-4 py-2 md:py-3 border-b flex items-center justify-between">
+              <div class="flex-1 min-w-0">
+                <div id="chatModuleTitle" class="font-semibold text-sm md:text-base text-slate-800 dark:text-slate-200 truncate">总纲聊天</div>
+                <div class="text-[10px] md:text-xs text-slate-500 dark:text-slate-400">对话是主体：继续聊 -> 整理版本 -> 设为正式版</div>
               </div>
               <div class="flex items-center gap-2">
-                <button onclick="openMobileChatVersions()" class="md:hidden px-2 py-1 border rounded text-xs">历史版本</button>
-                <button onclick="closeProjectChatModal()" class="px-2 py-1 border rounded">关闭</button>
+                <button onclick="openMobileChatVersions()" class="md:hidden px-2 py-1 border rounded text-xs mobile-tap-target">历史版本</button>
+                <button onclick="closeProjectChatModal()" class="hidden md:block px-2 py-1 border rounded mobile-tap-target">关闭</button>
               </div>
             </div>
-            <div id="chatContextSummary" class="px-4 py-2 border-b bg-indigo-50/60 text-xs text-slate-700"></div>
-            <div id="chatMessages" class="flex-1 min-h-0 overflow-y-auto p-3 md:p-4 space-y-2 bg-white"></div>
-            <div class="border-t p-3 bg-slate-50 shrink-0 safe-bottom">
+            <div id="chatContextSummary" class="px-3 md:px-4 py-2 border-b bg-indigo-50/60 dark:bg-indigo-900/30 text-[10px] md:text-xs text-slate-700 dark:text-slate-300"></div>
+            <div id="chatMessages" class="flex-1 min-h-0 overflow-y-auto p-2 md:p-4 space-y-2 bg-white dark:bg-gray-800 mobile-scroll"></div>
+            <div class="border-t p-2 md:p-3 bg-slate-50 dark:bg-gray-700 shrink-0 safe-bottom">
               <div class="flex gap-2 items-end">
-                <textarea id="chatInput" rows="1" class="flex-1 px-3 py-2 border rounded resize-none overflow-y-auto" placeholder="输入创作要求，例如：把前三章冲突提前并增强群像任务分工"></textarea>
-                <button id="chatSendBtn" onclick="sendProjectChatMessage()" class="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">发送</button>
+                <textarea id="chatInput" rows="1" class="flex-1 px-3 py-2 border rounded resize-none overflow-y-auto text-sm md:text-base" placeholder="输入创作要求..."></textarea>
+                <button id="chatSendBtn" onclick="sendProjectChatMessage()" class="px-3 py-2 bg-indigo-600 text-white rounded text-sm mobile-tap-target shrink-0">发送</button>
               </div>
-              <div class="mt-2 flex gap-2 flex-wrap">
-                <button onclick="finalizeFromConversationInModal()" class="text-xs px-2 py-1 bg-indigo-600 text-white rounded">符合预期，整理版本</button>
-                <button onclick="focusProjectChatInput()" class="text-xs px-2 py-1 border rounded">继续聊</button>
-                <button onclick="injectCoreContextToChat()" class="text-xs px-2 py-1 border rounded text-indigo-700 border-indigo-300 bg-indigo-50 hover:bg-indigo-100">一键注入题材+总纲上下文</button>
+              <div class="mt-2 flex gap-1.5 md:gap-2 flex-wrap">
+                <button onclick="finalizeFromConversationInModal()" class="text-[10px] md:text-xs px-2 py-1 bg-indigo-600 text-white rounded mobile-tap-target">符合预期，整理版本</button>
+                <button onclick="focusProjectChatInput()" class="text-[10px] md:text-xs px-2 py-1 border rounded mobile-tap-target">继续聊</button>
+                <button onclick="injectCoreContextToChat()" class="text-[10px] md:text-xs px-2 py-1 border rounded text-indigo-700 border-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 mobile-tap-target">一键注入上下文</button>
               </div>
             </div>
           </div>
-          <div class="hidden md:flex md:col-span-3 border-l bg-slate-50 flex-col min-h-0">
+          <div class="hidden md:flex md:col-span-3 border-l bg-slate-50 dark:bg-gray-700 flex-col min-h-0">
             <div class="p-3 border-b flex items-center justify-between">
-              <div class="font-semibold text-slate-800">历史版本</div>
-              <button onclick="refreshProjectChatModal()" class="text-xs px-2 py-1 border rounded">刷新</button>
+              <div class="font-semibold text-slate-800 dark:text-slate-200">历史版本</div>
+              <button onclick="refreshProjectChatModal()" class="text-xs px-2 py-1 border rounded mobile-tap-target">刷新</button>
             </div>
-            <div id="chatVersions" class="flex-1 min-h-0 overflow-y-auto p-2 space-y-2"></div>
+            <div id="chatVersions" class="flex-1 min-h-0 overflow-y-auto p-2 space-y-2 mobile-scroll"></div>
           </div>
         </div>
       </div>
@@ -1087,41 +1184,44 @@ function switchTab(tab) {
     currentTab = tab;
 
     // 更新按钮样式
-    document.querySelector('#tabContent').parentElement.querySelectorAll('.flex > button').forEach((btn, index) => {
-        const tabNames = ['world', 'master_outline', 'characters', 'outline', 'write', 'export'];
-        const btnTab = tabNames[index];
-        if (btnTab === tab) {
-            btn.className = "shrink-0 min-w-[92px] py-3 px-4 font-medium bg-indigo-50 text-indigo-600 border-b-2 border-indigo-600";
-        } else {
-            btn.className = "shrink-0 min-w-[92px] py-3 px-4 font-medium text-gray-500 hover:bg-gray-50";
+    const tabWrap = document.getElementById('projectTabButtons');
+    if (tabWrap) {
+        tabWrap.querySelectorAll('button[data-tab-key]').forEach((btn) => {
+            const btnTab = btn.getAttribute('data-tab-key');
+            btn.className = `shrink-0 py-2.5 md:py-3 px-3 md:px-4 text-xs md:text-sm font-medium ${btnTab === tab ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50 dark:bg-indigo-900/30' : 'text-gray-500 hover:text-gray-700'}`;
+        });
+        // 滚动到可见的 tab
+        const activeBtn = tabWrap.querySelector(`button[data-tab-key="${tab}"]`);
+        if (activeBtn) {
+            activeBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
         }
-    });
+    }
 
     const contentEl = document.getElementById('tabContent');
     const projectId = currentProject.id;
 
     if (tab === 'world') {
         contentEl.innerHTML = `
-            <div class="mb-3 flex justify-end">
-                <button onclick="openManualEditCurrentTab(${projectId}, 'creative_profile')" class="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm">手动编辑本页内容</button>
+            <div class="mb-3 flex flex-wrap justify-end gap-2">
+                <button onclick="openManualEditCurrentTab(${projectId}, 'creative_profile')" class="px-3 py-2 bg-indigo-600 text-white rounded text-sm mobile-tap-target">手动编辑</button>
             </div>
             <div id="worldSettingBody">
-                <p class="text-gray-500 italic">尚未设置题材定位</p>
+                <p class="text-gray-500 italic text-sm">尚未设置题材定位</p>
             </div>
-            <div id="workbenchPanel" class="mt-6"></div>
+            <div id="workbenchPanel" class="mt-4 md:mt-6"></div>
         `;
         loadCreativeProfile(projectId);
         loadWorkbench(projectId, 'creative_profile');
     } else if (tab === 'master_outline') {
         contentEl.innerHTML = `
-            <div class="mb-3 p-3 bg-indigo-50 border border-indigo-100 rounded text-sm text-indigo-800">
-                对话是主体：先在工作台持续对话，满意后“整理成版本”，再“设为正式版”。后续卷纲生成将强依赖这里的正式总纲。
+            <div class="mb-3 p-2.5 md:p-3 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 rounded text-xs md:text-sm text-indigo-800 dark:text-indigo-200">
+                对话是主体：先在工作台持续对话，满意后"整理成版本"，再"设为正式版"。后续卷纲生成将强依赖这里的正式总纲。
             </div>
-            <div class="mb-3 flex justify-end">
-                <button onclick="openManualEditCurrentTab(${projectId}, 'master_outline')" class="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm">手动编辑本页内容</button>
+            <div class="mb-3 flex flex-wrap justify-end gap-2">
+                <button onclick="openManualEditCurrentTab(${projectId}, 'master_outline')" class="px-3 py-2 bg-indigo-600 text-white rounded text-sm mobile-tap-target">手动编辑</button>
             </div>
             <div id="masterOutlineBody" class="mb-4">
-                <p class="text-gray-500 italic">尚未沉淀总纲，请先用下方工作台对话生成。</p>
+                <p class="text-gray-500 italic text-sm">尚未沉淀总纲，请先用下方工作台对话生成。</p>
             </div>
             <div id="workbenchPanel" class="mt-2"></div>
         `;
@@ -1129,73 +1229,71 @@ function switchTab(tab) {
         loadWorkbench(projectId, 'master_outline');
     } else if (tab === 'characters') {
         contentEl.innerHTML = `
-            <div class="mb-4 flex justify-end gap-2">
-                <button onclick="openManualEditCurrentTab(${projectId}, 'characters')" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">
-                    手动编辑本页内容
+            <div class="mb-3 md:mb-4 flex flex-wrap justify-end gap-1.5 md:gap-2">
+                <button onclick="openManualEditCurrentTab(${projectId}, 'characters')" class="px-2.5 md:px-4 py-1.5 md:py-2 bg-indigo-600 text-white rounded text-xs md:text-sm mobile-tap-target">
+                    手动编辑
                 </button>
-                <button onclick="showAddCharacter(${projectId})" class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition">
+                <button onclick="showAddCharacter(${projectId})" class="px-2.5 md:px-4 py-1.5 md:py-2 bg-gray-600 text-white rounded text-xs md:text-sm mobile-tap-target">
                     添加角色
                 </button>
-                <button onclick="generateCharacters(${projectId})" id="btnGenerateChars" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">
+                <button onclick="generateCharacters(${projectId})" id="btnGenerateChars" class="px-2.5 md:px-4 py-1.5 md:py-2 bg-indigo-600 text-white rounded text-xs md:text-sm mobile-tap-target">
                     AI生成角色
                 </button>
-                <button onclick="deleteAllCharacters(${projectId})" class="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition">
+                <button onclick="deleteAllCharacters(${projectId})" class="px-2.5 md:px-4 py-1.5 md:py-2 bg-red-600 text-white rounded text-xs md:text-sm mobile-tap-target">
                     清空所有
                 </button>
             </div>
             <div id="characterListBody">
-                <p class="text-gray-500 italic">尚未生成角色</p>
+                <p class="text-gray-500 italic text-sm">尚未生成角色</p>
             </div>
-            <div id="workbenchPanel" class="mt-6"></div>
+            <div id="workbenchPanel" class="mt-4 md:mt-6"></div>
         `;
         loadCharacters(projectId);
         loadWorkbench(projectId, 'characters');
     } else if (tab === 'outline') {
         contentEl.innerHTML = `
-            <div class="mb-3 flex justify-end">
-                <button onclick="openManualEditCurrentTab(${projectId}, 'outline')" class="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm">手动编辑本页内容</button>
+            <div class="mb-3 flex flex-wrap justify-end gap-2">
+                <button onclick="openManualEditCurrentTab(${projectId}, 'outline')" class="px-3 py-2 bg-indigo-600 text-white rounded text-sm mobile-tap-target">手动编辑</button>
             </div>
-            <div class="mb-4 bg-blue-50 p-3 rounded">
-                <p class="text-sm text-blue-800">💡 这里推荐先用下方<strong>卷纲聊天工作台</strong>持续迭代。分步生成按钮放在“高级生成”里，仅作辅助入口。</p>
+            <div class="mb-3 md:mb-4 bg-blue-50 dark:bg-blue-900/30 p-2.5 md:p-3 rounded text-xs md:text-sm">
+                <p class="text-blue-800 dark:text-blue-200">💡 推荐先用下方<strong>卷纲聊天工作台</strong>持续迭代。分步生成按钮放在"高级生成"里，仅作辅助入口。</p>
             </div>
-            <div class="mb-4">
-                <button onclick="toggleOutlineAdvanced()" class="px-3 py-2 border rounded text-sm">高级生成（展开/收起）</button>
-            </div>
-            <div class="mb-4 flex gap-2 flex-wrap">
-                <button id="outlineViewVolumeBtn" onclick="setOutlineViewMode('volume', ${projectId})" class="px-3 py-2 rounded text-sm bg-indigo-600 text-white">按卷视图编辑</button>
-                <button id="outlineViewChapterBtn" onclick="setOutlineViewMode('chapter', ${projectId})" class="px-3 py-2 rounded text-sm border">按章视图编辑</button>
+            <div class="mb-3 md:mb-4 flex flex-wrap gap-2">
+                <button onclick="toggleOutlineAdvanced()" class="px-3 py-2 border rounded text-sm mobile-tap-target">高级生成（展开/收起）</button>
+                <button id="outlineViewVolumeBtn" onclick="setOutlineViewMode('volume', ${projectId})" class="px-3 py-2 rounded text-sm bg-indigo-600 text-white mobile-tap-target">按卷视图</button>
+                <button id="outlineViewChapterBtn" onclick="setOutlineViewMode('chapter', ${projectId})" class="px-3 py-2 rounded text-sm border mobile-tap-target">按章视图</button>
             </div>
             <div id="outlineAdvancedBox" class="hidden">
-                <div class="flex gap-4 mb-4 items-end">
-                    <div class="min-w-[280px]">
-                        <label class="block text-sm text-gray-600 mb-1">目标卷</label>
-                        <select id="batchTargetVolume" class="w-full px-2 py-1 border rounded"></select>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+                    <div>
+                        <label class="block text-xs md:text-sm text-gray-600 dark:text-gray-400 mb-1">目标卷</label>
+                        <select id="batchTargetVolume" class="w-full px-2 py-1.5 border rounded text-sm mobile-tap-target"></select>
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-600 mb-1">总章节数</label>
-                        <input type="number" id="totalChapters" value="50" min="10" max="100" class="w-24 px-2 py-1 border rounded">
+                        <label class="block text-xs md:text-sm text-gray-600 dark:text-gray-400 mb-1">总章节数</label>
+                        <input type="number" id="totalChapters" value="50" min="10" max="100" class="w-full px-2 py-1.5 border rounded text-sm">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-600 mb-1">每批生成</label>
-                        <input type="number" id="batchSize" value="10" min="5" max="30" class="w-20 px-2 py-1 border rounded">
+                        <label class="block text-xs md:text-sm text-gray-600 dark:text-gray-400 mb-1">每批生成</label>
+                        <input type="number" id="batchSize" value="10" min="5" max="30" class="w-full px-2 py-1.5 border rounded text-sm">
                     </div>
                 </div>
-                <div class="flex gap-2 mb-4">
-                    <button onclick="generateNextVolumeSkeleton(${projectId})" id="btnGenerateSkeleton" class="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 transition">
+                <div class="flex flex-wrap gap-2 mb-4">
+                    <button onclick="generateNextVolumeSkeleton(${projectId})" id="btnGenerateSkeleton" class="px-3 md:px-4 py-2 bg-purple-600 text-white rounded text-xs md:text-sm mobile-tap-target">
                         1. 生成卷骨架
                     </button>
-                    <button onclick="generateNextBatch(${projectId})" id="btnGenerateBatch" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">
+                    <button onclick="generateNextBatch(${projectId})" id="btnGenerateBatch" class="px-3 md:px-4 py-2 bg-indigo-600 text-white rounded text-xs md:text-sm mobile-tap-target">
                         2. 生成下一批章节
                     </button>
-                    <button onclick="generateAllRemainingChapters(${projectId})" id="btnGenerateAllRemaining" class="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 transition">
-                        3. 一键补齐本卷剩余章节
+                    <button onclick="generateAllRemainingChapters(${projectId})" id="btnGenerateAllRemaining" class="px-3 md:px-4 py-2 bg-emerald-600 text-white rounded text-xs md:text-sm mobile-tap-target">
+                        3. 一键补齐本卷
                     </button>
                 </div>
             </div>
-            <div id="outlineContent" class="space-y-3">
-                <p class="text-gray-500 italic">尚未生成大纲，点击上方按钮开始分步生成</p>
+            <div id="outlineContent" class="space-y-2 md:space-y-3">
+                <p class="text-gray-500 italic text-sm">尚未生成大纲，点击上方按钮开始分步生成</p>
             </div>
-            <div id="workbenchPanel" class="mt-6"></div>
+            <div id="workbenchPanel" class="mt-4 md:mt-6"></div>
         `;
         updateOutlineViewButtons();
         loadOutline(projectId);
@@ -1203,88 +1301,153 @@ function switchTab(tab) {
     } else if (tab === 'write') {
         contentEl.innerHTML = `
             <div id="writeContent" class="space-y-3">
-                <div class="border rounded-lg p-4 bg-indigo-50">
-                    <div class="font-semibold text-gray-800">正文批量生成（连续剧情模式）</div>
-                    <div class="text-sm text-gray-600 mt-1">推荐每批 <strong>5章</strong>：稳定、连贯、失败重试成本低。下一批会自动从未生成章节继续，并继承前文上下文。</div>
-                    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mt-3">
-                        <div class="md:col-span-2">
-                            <label class="block text-sm text-gray-600 mb-1">目标卷</label>
-                            <select id="writeBatchVolume" class="w-full px-3 py-2 border rounded"></select>
+                <div class="border rounded-lg p-3 md:p-4 bg-indigo-50 dark:bg-indigo-900/30">
+                    <div class="font-semibold text-sm md:text-base text-gray-800 dark:text-gray-200">正文批量生成（连续剧情模式）</div>
+                    <div class="text-xs md:text-sm text-gray-600 dark:text-gray-400 mt-1">推荐每批 <strong>5章</strong>：稳定、连贯、失败重试成本低。下一批会自动从未生成章节继续，并继承前文上下文。</div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 md:gap-3 mt-3">
+                        <div class="sm:col-span-2 lg:col-span-2">
+                            <label class="block text-xs md:text-sm text-gray-600 dark:text-gray-400 mb-1">目标卷</label>
+                            <select id="writeBatchVolume" class="w-full px-3 py-2 border rounded text-sm mobile-tap-target"></select>
                         </div>
                         <div>
-                            <label class="block text-sm text-gray-600 mb-1">每批章数</label>
-                            <input id="writeBatchSize" type="number" min="1" max="10" value="5" class="w-full px-3 py-2 border rounded">
+                            <label class="block text-xs md:text-sm text-gray-600 dark:text-gray-400 mb-1">每批章数</label>
+                            <input id="writeBatchSize" type="number" min="1" max="10" value="5" class="w-full px-3 py-2 border rounded text-sm">
                         </div>
                         <div>
-                            <label class="block text-sm text-gray-600 mb-1">目标字数（可选）</label>
-                            <input id="writeBatchTargetWords" type="number" min="500" max="20000" step="100" placeholder="留空=按章配置" class="w-full px-3 py-2 border rounded">
+                            <label class="block text-xs md:text-sm text-gray-600 dark:text-gray-400 mb-1">目标字数（可选）</label>
+                            <input id="writeBatchTargetWords" type="number" min="500" max="20000" step="100" placeholder="留空=按章配置" class="w-full px-3 py-2 border rounded text-sm">
                         </div>
                     </div>
-                    <div id="writeBatchPendingInfo" class="text-xs text-gray-600 mt-2"></div>
-                    <div class="flex gap-2 flex-wrap mt-3">
-                        <button id="btnWriteBatchNext" onclick="generateWriteNextBatch(${projectId})" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">生成下一批正文</button>
-                        <button id="btnWriteBatchAll" onclick="generateWriteAllRemaining(${projectId})" class="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 transition">一键补齐本卷剩余正文</button>
+                    <div id="writeBatchPendingInfo" class="text-[10px] md:text-xs text-gray-600 dark:text-gray-400 mt-2"></div>
+                    <div class="flex flex-wrap gap-2 mt-3">
+                        <button id="btnWriteBatchNext" onclick="generateWriteNextBatch(${projectId})" class="px-3 md:px-4 py-2 bg-indigo-600 text-white rounded text-xs md:text-sm mobile-tap-target">生成下一批正文</button>
+                        <button id="btnWriteBatchAll" onclick="generateWriteAllRemaining(${projectId})" class="px-3 md:px-4 py-2 bg-emerald-600 text-white rounded text-xs md:text-sm mobile-tap-target">一键补齐本卷</button>
                     </div>
                     <div id="writeBatchProgressWrap" class="hidden mt-3">
-                        <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
+                        <div class="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
                             <span id="writeBatchProgressText">准备中...</span>
                             <span id="writeBatchProgressPercent">0%</span>
                         </div>
-                        <div class="h-2 rounded bg-gray-200 overflow-hidden">
+                        <div class="h-2 rounded bg-gray-200 dark:bg-gray-700 overflow-hidden">
                             <div id="writeBatchProgressBar" class="h-2 bg-indigo-600 transition-all duration-300" style="width:0%"></div>
                         </div>
                     </div>
-                    <div id="writeBatchResult" class="text-xs mt-2 text-gray-600"></div>
-                    <div id="writeBatchFailedBox" class="hidden mt-3 border border-amber-200 bg-amber-50 rounded p-2">
+                    <div id="writeBatchResult" class="text-xs mt-2 text-gray-600 dark:text-gray-400"></div>
+                    <div id="writeBatchFailedBox" class="hidden mt-3 border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 rounded p-2">
                         <div class="flex items-center justify-between">
-                            <div class="text-xs font-medium text-amber-800">失败章节列表</div>
-                            <button id="btnWriteRetryFailed" onclick="retryWriteFailedChapters()" class="px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 transition">重试失败章节</button>
+                            <div class="text-xs font-medium text-amber-800 dark:text-amber-200">失败章节列表</div>
+                            <button id="btnWriteRetryFailed" onclick="retryWriteFailedChapters()" class="px-2 py-1 text-xs bg-amber-600 text-white rounded mobile-tap-target">重试失败章节</button>
                         </div>
-                        <div id="writeBatchFailedList" class="mt-2 text-xs text-amber-900 space-y-1"></div>
+                        <div id="writeBatchFailedList" class="mt-2 text-xs text-amber-900 dark:text-amber-100 space-y-1"></div>
                     </div>
                 </div>
-                <div class="text-center py-8 text-gray-500" id="writeEmpty">
+                <div class="text-center py-6 md:py-8 text-gray-500 text-sm" id="writeEmpty">
                     <p>请先生成大纲和章节，生成好的正文会显示在这里</p>
                 </div>
-                <div id="generatedChapters" class="hidden space-y-4"></div>
+                <div id="generatedChapters" class="hidden space-y-3 md:space-y-4"></div>
             </div>
         `;
         loadWriteBatchPanel(projectId);
         loadGeneratedChapters(projectId);
+    } else if (tab === 'read') {
+        const fs = Number(readingState?.settings?.fontSize || 20);
+        const lh = Number(readingState?.settings?.lineHeight || 1.95);
+        const rw = Number(readingState?.settings?.width || 840);
+        contentEl.innerHTML = `
+            <div class="space-y-3">
+                <div class="border rounded-lg p-2.5 md:p-3 bg-slate-50 dark:bg-gray-700">
+                    <div class="font-semibold text-sm md:text-base text-slate-800 dark:text-slate-200">小说阅读模式</div>
+                    <div class="text-[10px] md:text-xs text-slate-600 dark:text-slate-400 mt-1">支持 Web + H5：目录跳章、上一章/下一章、字号与排版宽度可调。</div>
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-2 md:gap-3 mt-2 md:mt-3">
+                        <div class="col-span-2 md:col-span-2">
+                            <label class="block text-[10px] md:text-xs text-gray-600 dark:text-gray-400 mb-1">卷目录</label>
+                            <select id="readVolumeSelect" class="w-full px-2 md:px-3 py-1.5 md:py-2 border rounded text-sm mobile-tap-target" onchange="handleReadVolumeChange()"></select>
+                        </div>
+                        <div>
+                            <label class="block text-[10px] md:text-xs text-gray-600 dark:text-gray-400 mb-1">字号</label>
+                            <input id="readerFontSize" type="number" min="14" max="34" step="1" value="${fs}" class="w-full px-2 py-1.5 md:py-2 border rounded text-sm" onchange="updateReaderSettings()">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] md:text-xs text-gray-600 dark:text-gray-400 mb-1">行距</label>
+                            <input id="readerLineHeight" type="number" min="1.4" max="2.8" step="0.05" value="${lh}" class="w-full px-2 py-1.5 md:py-2 border rounded text-sm" onchange="updateReaderSettings()">
+                        </div>
+                        <div class="hidden md:block">
+                            <label class="block text-[10px] md:text-xs text-gray-600 dark:text-gray-400 mb-1">排版宽度</label>
+                            <input id="readerWidth" type="number" min="560" max="1100" step="10" value="${rw}" class="w-full px-2 py-1.5 md:py-2 border rounded text-sm" onchange="updateReaderSettings()">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-2 md:gap-3 min-h-[50vh] md:min-h-[68vh]">
+                    <aside class="lg:col-span-4 border rounded-lg bg-white dark:bg-gray-800 flex flex-col min-h-[30vh] md:min-h-[68vh]">
+                        <div class="px-3 py-2 border-b flex items-center justify-between">
+                            <div class="font-medium text-sm md:text-base text-slate-800 dark:text-slate-200">章节目录</div>
+                            <button onclick="toggleReadMobileToc()" class="lg:hidden text-xs px-2 py-1 border rounded mobile-tap-target">展开/收起</button>
+                        </div>
+                        <div id="readTocList" class="hidden lg:block flex-1 min-h-0 overflow-y-auto p-2 space-y-1"></div>
+                        <div id="readTocListMobile" class="lg:hidden flex-1 min-h-0 overflow-y-auto p-2 space-y-1 hidden"></div>
+                    </aside>
+                    <section class="lg:col-span-8 border rounded-lg bg-white dark:bg-gray-800 flex flex-col min-h-[50vh] md:min-h-[68vh]">
+                        <div class="px-2.5 md:px-3 py-2 border-b bg-slate-50 dark:bg-gray-700">
+                            <div class="flex items-center justify-between gap-2">
+                                <div class="flex-1 min-w-0">
+                                    <div id="readChapterTitle" class="font-semibold text-sm md:text-base text-slate-900 dark:text-slate-100 truncate">请选择章节</div>
+                                    <div id="readChapterMeta" class="text-[10px] md:text-xs text-slate-500 dark:text-slate-400 mt-0.5">未选择</div>
+                                </div>
+                                <div class="hidden md:flex items-center gap-2">
+                                    <button onclick="gotoPrevReadChapter()" class="px-2 py-1 border rounded text-sm hover:bg-gray-100 mobile-tap-target">上一章</button>
+                                    <button onclick="gotoNextReadChapter()" class="px-2 py-1 border rounded text-sm hover:bg-gray-100 mobile-tap-target">下一章</button>
+                                </div>
+                            </div>
+                            <div class="md:hidden mt-2 flex gap-2">
+                                <button onclick="gotoPrevReadChapter()" class="flex-1 px-2 py-1.5 border rounded text-sm mobile-tap-target">上一章</button>
+                                <button onclick="gotoNextReadChapter()" class="flex-1 px-2 py-1.5 border rounded text-sm mobile-tap-target">下一章</button>
+                            </div>
+                        </div>
+                        <div id="readChapterBodyWrap" class="flex-1 min-h-0 overflow-y-auto p-3 md:p-6 bg-slate-50 dark:bg-gray-900 mobile-scroll">
+                            <article id="readChapterBody" class="reader-content mx-auto text-slate-800 dark:text-slate-200 whitespace-pre-wrap leading-7 md:leading-8 text-sm md:text-base"></article>
+                            <div id="readEmptyState" class="text-xs md:text-sm text-gray-500 py-8 md:py-10 text-center">当前项目暂无可阅读的已生成章节，请先在"写作"页生成正文。</div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        `;
+        initReadMode(projectId);
     } else if (tab === 'export') {
         contentEl.innerHTML = `
-            <div class="space-y-4">
-                <div class="grid grid-cols-2 gap-4">
-                    <button onclick="exportFullText(${projectId})" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition">导出全文(Markdown)</button>
-                    <button onclick="exportFullProject(${projectId})" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition">导出完整项目(含所有设定)</button>
+            <div class="space-y-3 md:space-y-4">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4">
+                    <button onclick="exportFullText(${projectId})" class="px-4 py-2.5 bg-green-600 text-white rounded text-sm mobile-tap-target">导出全文(Markdown)</button>
+                    <button onclick="exportFullProject(${projectId})" class="px-4 py-2.5 bg-blue-600 text-white rounded text-sm mobile-tap-target">导出完整项目(含所有设定)</button>
                 </div>
-                <div class="border rounded p-3 bg-slate-50">
-                    <div class="font-medium text-slate-800 mb-2">项目导入/导出（JSON包）</div>
-                    <div class="flex gap-2 flex-wrap">
-                        <button onclick="downloadProjectBundle(${projectId})" class="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">导出项目JSON</button>
-                        <input id="importProjectFile" type="file" accept=".json,application/json" class="text-sm" />
-                        <button onclick="importProjectBundle()" class="px-3 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 transition">导入为新项目</button>
+                <div class="border rounded p-3 bg-slate-50 dark:bg-gray-700">
+                    <div class="font-medium text-sm md:text-base text-slate-800 dark:text-slate-200 mb-2">项目导入/导出（JSON包）</div>
+                    <div class="flex flex-wrap gap-2">
+                        <button onclick="downloadProjectBundle(${projectId})" class="px-3 py-2 bg-indigo-600 text-white rounded text-sm mobile-tap-target">导出项目JSON</button>
+                        <input id="importProjectFile" type="file" accept=".json,application/json" class="text-xs md:text-sm" />
+                        <button onclick="importProjectBundle()" class="px-3 py-2 bg-emerald-600 text-white rounded text-sm mobile-tap-target">导入为新项目</button>
                     </div>
-                    <div class="text-xs text-slate-500 mt-2">导入不会覆盖当前项目，会新建一个“xxx-导入”项目。</div>
+                    <div class="text-[10px] md:text-xs text-slate-500 dark:text-slate-400 mt-2">导入不会覆盖当前项目，会新建一个"xxx-导入"项目。</div>
                 </div>
                 <div id="exportContent" class="mt-4 hidden">
-                    <textarea id="fullTextArea" class="w-full h-64 p-2 border rounded bg-gray-50" readonly></textarea>
-                    <div class="mt-2 space-x-2">
-                        <button onclick="copyFullText()" class="px-3 py-1 bg-gray-600 text-white rounded hover:bg-gray-700 transition">复制</button>
-                        <button onclick="downloadFullText(${projectId})" class="px-3 py-1 bg-gray-600 text-white rounded hover:bg-gray-700 transition">下载全文</button>
+                    <textarea id="fullTextArea" class="w-full h-48 md:h-64 p-2 border rounded bg-gray-50 dark:bg-gray-700 text-sm" readonly></textarea>
+                    <div class="mt-2 flex flex-wrap gap-2">
+                        <button onclick="copyFullText()" class="px-3 py-1.5 bg-gray-600 text-white rounded text-sm mobile-tap-target">复制</button>
+                        <button onclick="downloadFullText(${projectId})" class="px-3 py-1.5 bg-gray-600 text-white rounded text-sm mobile-tap-target">下载全文</button>
                     </div>
                 </div>
                 <div id="exportProjectContent" class="mt-4 hidden">
-                    <textarea id="fullProjectArea" class="w-full h-64 p-2 border rounded bg-gray-50" readonly></textarea>
-                    <div class="mt-2 space-x-2">
-                        <button onclick="copyFullProject()" class="px-3 py-1 bg-gray-600 text-white rounded hover:bg-gray-700 transition">复制</button>
-                         <button onclick="downloadFullProject(${projectId})" class="px-3 py-1 bg-gray-600 text-white rounded hover:bg-gray-700 transition">下载项目</button>
+                    <textarea id="fullProjectArea" class="w-full h-48 md:h-64 p-2 border rounded bg-gray-50 dark:bg-gray-700 text-sm" readonly></textarea>
+                    <div class="mt-2 flex flex-wrap gap-2">
+                        <button onclick="copyFullProject()" class="px-3 py-1.5 bg-gray-600 text-white rounded text-sm mobile-tap-target">复制</button>
+                         <button onclick="downloadFullProject(${projectId})" class="px-3 py-1.5 bg-gray-600 text-white rounded text-sm mobile-tap-target">下载项目</button>
                     </div>
                 </div>
             </div>
         `;
     }
 }
+
 
 function updateOutlineViewButtons() {
     const volBtn = document.getElementById('outlineViewVolumeBtn');
@@ -1702,25 +1865,25 @@ async function loadCharacters(projectId) {
         const el = document.getElementById('characterListBody');
         let html = '';
         if (chars.length === 0) {
-            html += `<p class="text-gray-500 italic">尚未生成角色</p>`;
+            html += `<p class="text-gray-500 italic text-sm">尚未生成角色</p>`;
         } else {
-            html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
+            html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-3">';
             chars.forEach(c => {
-                const badge = c.is_main ? '<span class="ml-2 px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs">主角</span>' : '';
+                const badge = c.is_main ? '<span class="ml-2 px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded text-[10px] md:text-xs">主角</span>' : '';
                 html += `
-                    <div class="border rounded p-3 hover:shadow-sm transition">
-                        <div class="font-medium flex items-center justify-between">
-                            <span>${escapeHtml(c.name)}${badge}</span>
-                            <div class="space-x-1">
-                                <button onclick="editCharacter(${projectId}, ${c.id})" class="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded hover:bg-gray-200 transition">编辑</button>
-                                <button onclick="deleteCharacter(${c.id}, ${projectId})" class="px-2 py-1 bg-red-100 text-red-700 text-xs rounded hover:bg-red-200 transition">删除</button>
+                    <div class="border rounded p-2.5 md:p-3 hover:shadow-sm transition bg-white dark:bg-gray-800">
+                        <div class="font-medium flex items-center justify-between gap-2">
+                            <span class="text-sm md:text-base truncate">${escapeHtml(c.name)}${badge}</span>
+                            <div class="flex gap-1 shrink-0">
+                                <button onclick="editCharacter(${projectId}, ${c.id})" class="px-2 py-1 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-[10px] md:text-xs rounded mobile-tap-target">编辑</button>
+                                <button onclick="deleteCharacter(${c.id}, ${projectId})" class="px-2 py-1 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 text-[10px] md:text-xs rounded mobile-tap-target">删除</button>
                             </div>
                         </div>
-                        ${c.role ? `<div class="text-sm mt-1"><span class="text-gray-600">定位：</span>${escapeHtml(c.role)}</div>` : ''}
-                        ${c.avatar ? `<div class="text-sm mt-1"><span class="text-gray-600">外貌：</span>${escapeHtml(c.avatar)}</div>` : ''}
-                        ${c.personality ? `<div class="text-sm mt-1"><span class="text-gray-600">性格：</span>${escapeHtml(c.personality)}</div>` : ''}
-                        ${c.background ? `<div class="text-sm mt-1"><span class="text-gray-600">背景：</span>${escapeHtml(c.background)}</div>` : ''}
-                        ${c.relationships ? `<div class="text-sm mt-1"><span class="text-gray-600">关系：</span>${escapeHtml(c.relationships)}</div>` : ''}
+                        ${c.role ? `<div class="text-xs md:text-sm mt-1"><span class="text-gray-600 dark:text-gray-400">定位：</span>${escapeHtml(c.role)}</div>` : ''}
+                        ${c.avatar ? `<div class="text-xs md:text-sm mt-1"><span class="text-gray-600 dark:text-gray-400">外貌：</span>${escapeHtml(c.avatar)}</div>` : ''}
+                        ${c.personality ? `<div class="text-xs md:text-sm mt-1"><span class="text-gray-600 dark:text-gray-400">性格：</span>${escapeHtml(c.personality)}</div>` : ''}
+                        ${c.background ? `<div class="text-xs md:text-sm mt-1 line-clamp-2"><span class="text-gray-600 dark:text-gray-400">背景：</span>${escapeHtml(c.background)}</div>` : ''}
+                        ${c.relationships ? `<div class="text-xs md:text-sm mt-1 line-clamp-2"><span class="text-gray-600 dark:text-gray-400">关系：</span>${escapeHtml(c.relationships)}</div>` : ''}
                     </div>
                 `;
             });
@@ -1728,23 +1891,23 @@ async function loadCharacters(projectId) {
         }
 
         html += `
-            <div class="mt-6 border rounded-lg p-4 bg-gray-50">
+            <div class="mt-4 md:mt-6 border rounded-lg p-3 md:p-4 bg-gray-50 dark:bg-gray-700">
                 <div class="flex justify-between items-center mb-3">
-                    <h3 class="font-semibold text-gray-800">关系图管理（群像）</h3>
-                    <button onclick="loadCharacterRelationships(${projectId})" class="px-3 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition">刷新关系</button>
+                    <h3 class="font-semibold text-sm md:text-base text-gray-800 dark:text-gray-200">关系图管理（群像）</h3>
+                    <button onclick="loadCharacterRelationships(${projectId})" class="px-2 md:px-3 py-1 text-[10px] md:text-xs bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300 rounded mobile-tap-target">刷新关系</button>
                 </div>
-                <div class="grid grid-cols-1 md:grid-cols-5 gap-2 mb-3">
-                    <select id="relSource" class="px-2 py-2 border rounded text-sm"></select>
-                    <select id="relTarget" class="px-2 py-2 border rounded text-sm"></select>
-                    <input id="relType" type="text" value="ally" placeholder="关系类型 ally/enemy/family..." class="px-2 py-2 border rounded text-sm md:col-span-1">
-                    <input id="relIntensity" type="number" min="0" max="1" step="0.1" value="0.7" class="px-2 py-2 border rounded text-sm">
-                    <button onclick="createCharacterRelationship(${projectId})" class="px-3 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 transition">新增/覆盖关系</button>
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 mb-3">
+                    <select id="relSource" class="px-2 py-1.5 border rounded text-xs md:text-sm mobile-tap-target"></select>
+                    <select id="relTarget" class="px-2 py-1.5 border rounded text-xs md:text-sm mobile-tap-target"></select>
+                    <input id="relType" type="text" value="ally" placeholder="关系类型 ally/enemy/family..." class="px-2 py-1.5 border rounded text-xs md:text-sm">
+                    <input id="relIntensity" type="number" min="0" max="1" step="0.1" value="0.7" class="px-2 py-1.5 border rounded text-xs md:text-sm">
+                    <button onclick="createCharacterRelationship(${projectId})" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-xs md:text-sm mobile-tap-target">新增/覆盖关系</button>
                 </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
-                    <input id="relStatus" type="text" value="stable" placeholder="状态，如 stable/hostile/trust-broken" class="px-2 py-2 border rounded text-sm">
-                    <input id="relNotes" type="text" placeholder="备注（可选）" class="px-2 py-2 border rounded text-sm">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+                    <input id="relStatus" type="text" value="stable" placeholder="状态，如 stable/hostile/trust-broken" class="px-2 py-1.5 border rounded text-xs md:text-sm">
+                    <input id="relNotes" type="text" placeholder="备注（可选）" class="px-2 py-1.5 border rounded text-xs md:text-sm">
                 </div>
-                <div id="relationshipListBody" class="space-y-2 text-sm text-gray-700">
+                <div id="relationshipListBody" class="space-y-2 text-xs md:text-sm text-gray-700 dark:text-gray-300">
                     <p class="text-gray-500 italic">尚未加载关系</p>
                 </div>
             </div>
@@ -3401,16 +3564,47 @@ function renderWriteFailedQueue() {
 }
 
 async function requestGenerateChapter(projectId, chapterId, targetWords = null) {
-    return apiRequest('/api/write/chapter', {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5分钟超时
+    try {
+        const result = await apiRequest('/api/write/chapter', {
+            method: 'POST',
+            body: JSON.stringify({
+                project_id: projectId,
+                chapter_id: chapterId,
+                target_words: (Number.isFinite(Number(targetWords)) && Number(targetWords) > 0)
+                    ? Number(targetWords)
+                    : null
+            }),
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        return result;
+    } catch (e) {
+        clearTimeout(timeoutId);
+        if (e.name === 'AbortError') {
+            throw new Error('生成超时（超过5分钟），请稍后重试或降低目标字数');
+        }
+        throw e;
+    }
+}
+
+async function requestBatchGenerate(projectId, volumeId, batchSize, targetWords = null) {
+    return apiRequest('/api/write/batch-generate', {
         method: 'POST',
         body: JSON.stringify({
             project_id: projectId,
-            chapter_id: chapterId,
+            volume_id: volumeId,
+            batch_size: batchSize,
             target_words: (Number.isFinite(Number(targetWords)) && Number(targetWords) > 0)
                 ? Number(targetWords)
                 : null
         })
     });
+}
+
+async function pollBatchProgress(taskId) {
+    return apiRequest(`/api/write/batch-progress/${taskId}`);
 }
 
 function getSelectedWriteBatchVolume() {
@@ -3537,7 +3731,7 @@ async function generateWriteNextBatch(projectId) {
         const targetWords = getWriteBatchTargetWords();
 
         const ok = await uiConfirm(
-            `确定生成第${selected.volume_index}卷第${start}-${end}章正文吗？\n\n本批预计生成 ${rangePendingCount} 章，完成后剩余 ${afterPending} 章。`
+            `确定生成第${selected.volume_index}卷第${start}-${end}章正文吗？\n\n本批预计生成 ${rangePendingCount} 章，完成后剩余 ${afterPending} 章。\n每章约需1-3分钟，页面会自动刷新进度。`
         );
         if (!ok) return;
 
@@ -3548,42 +3742,85 @@ async function generateWriteNextBatch(projectId) {
         renderWriteFailedQueue();
         updateWriteBatchProgress(0, targets.length, `第${selected.volume_index}卷批量正文`);
         const resultEl = document.getElementById('writeBatchResult');
-        if (resultEl) resultEl.textContent = '开始按章生成...';
+        if (resultEl) resultEl.textContent = '正在启动批量生成任务...';
 
-        let successCount = 0;
-        for (let i = 0; i < targets.length; i++) {
-            const t = targets[i];
-            const tw = (Number.isFinite(Number(targetWords)) && Number(targetWords) > 0)
-                ? Number(targetWords)
-                : ((Number.isFinite(Number(t.target_words)) && Number(t.target_words) > 0) ? Number(t.target_words) : null);
-            try {
-                await requestGenerateChapter(projectId, t.id, tw);
-                successCount += 1;
-            } catch (e) {
-                writeFailedQueue.push({
-                    chapter_id: t.id,
-                    chapter_index: t.chapter_index,
-                    title: t.title || '',
-                    target_words: tw,
-                    error: e.message || '生成失败'
-                });
+        // 调用批量接口获取任务ID
+        const batchResult = await requestBatchGenerate(projectId, selected.id, batchSize, targetWords);
+
+        if (!batchResult.task_id) {
+            // 没有需要生成的章节
+            if (resultEl) resultEl.textContent = batchResult.message || '没有需要生成的章节';
+            setWriteBatchButtonsDisabled(false);
+            if (btn) hideLoading(btn, oldHtml || '生成下一批正文');
+            return;
+        }
+
+        const taskId = batchResult.task_id;
+        if (resultEl) resultEl.textContent = '批量生成任务已启动，正在轮询进度...';
+
+        // 轮询进度
+        let pollCount = 0;
+        const maxPolls = 600; // 最多轮询600次（约10分钟）
+        const pollInterval = 5000; // 每5秒轮询一次
+
+        const pollTimer = setInterval(async () => {
+            pollCount++;
+            if (pollCount > maxPolls) {
+                clearInterval(pollTimer);
+                setWriteBatchButtonsDisabled(false);
+                if (btn) hideLoading(btn, oldHtml || '生成下一批正文');
+                await uiAlert('轮询超时，请刷新页面查看结果');
+                return;
             }
-            updateWriteBatchProgress(i + 1, targets.length, `第${selected.volume_index}卷批量正文`);
-        }
 
-        if (resultEl) resultEl.textContent = `本批完成：成功 ${successCount} 章，失败 ${writeFailedQueue.length} 章。`;
-        renderWriteFailedQueue();
-        if (writeFailedQueue.length) {
-            await uiAlert(`本批生成完成：成功 ${successCount} 章，失败 ${writeFailedQueue.length} 章。可点击“重试失败章节”。`);
-        } else {
-            await uiAlert(`本批生成完成：成功 ${successCount} 章。`);
-        }
-        await loadWriteBatchPanel(projectId);
-        await loadGeneratedChapters(projectId);
-        await loadOutline(projectId);
+            try {
+                const progress = await pollBatchProgress(taskId);
+
+                // 更新进度条
+                updateWriteBatchProgress(progress.current || 0, progress.total || targets.length, `第${selected.volume_index}卷批量正文`);
+
+                if (resultEl) {
+                    resultEl.textContent = progress.message || `进度：${progress.current || 0}/${progress.total || 0}`;
+                }
+
+                // 任务完成
+                if (progress.status === 'completed') {
+                    clearInterval(pollTimer);
+                    writeFailedQueue = progress.failed || [];
+                    renderWriteFailedQueue();
+
+                    if (resultEl) {
+                        resultEl.textContent = progress.message || `本批完成：成功 ${progress.generated_count || 0} 章，失败 ${writeFailedQueue.length} 章。`;
+                    }
+
+                    if (writeFailedQueue.length) {
+                        await uiAlert(`本批生成完成：成功 ${progress.generated_count || 0} 章，失败 ${writeFailedQueue.length} 章。可点击”重试失败章节”。`);
+                    } else {
+                        await uiAlert(`本批生成完成：成功 ${progress.generated_count || 0} 章。`);
+                    }
+
+                    setWriteBatchButtonsDisabled(false);
+                    if (btn) hideLoading(btn, oldHtml || '生成下一批正文');
+                    await loadWriteBatchPanel(projectId);
+                    await loadGeneratedChapters(projectId);
+                    await loadOutline(projectId);
+                }
+
+                // 任务失败
+                if (progress.status === 'failed') {
+                    clearInterval(pollTimer);
+                    setWriteBatchButtonsDisabled(false);
+                    if (btn) hideLoading(btn, oldHtml || '生成下一批正文');
+                    await uiAlert('批量生成失败: ' + (progress.error || '未知错误'));
+                }
+            } catch (e) {
+                console.error('轮询进度失败:', e);
+                // 轮询失败不中断，继续尝试
+            }
+        }, pollInterval);
+
     } catch (e) {
         await uiAlert('批量生成失败: ' + e.message);
-    } finally {
         setWriteBatchButtonsDisabled(false);
         if (btn) hideLoading(btn, oldHtml || '生成下一批正文');
     }
@@ -3613,7 +3850,7 @@ async function generateWriteAllRemaining(projectId) {
         const batchSize = clampWriteBatchSize(document.getElementById('writeBatchSize')?.value || 5);
         const targetWords = getWriteBatchTargetWords();
         const ok = await uiConfirm(
-            `确定一键补齐第${selected.volume_index}卷剩余正文吗？\n\n范围：第${start}-${end}章，共 ${pending.length} 章。\n系统会按每批 ${batchSize} 章顺序生成。`
+            `确定一键补齐第${selected.volume_index}卷剩余正文吗？\n\n范围：第${start}-${end}章，共 ${pending.length} 章。\n每章约需1-3分钟，页面会自动刷新进度。`
         );
         if (!ok) return;
 
@@ -3624,42 +3861,80 @@ async function generateWriteAllRemaining(projectId) {
         renderWriteFailedQueue();
         updateWriteBatchProgress(0, pending.length, `第${selected.volume_index}卷补齐正文`);
         const resultEl = document.getElementById('writeBatchResult');
-        if (resultEl) resultEl.textContent = '开始按章补齐...';
+        if (resultEl) resultEl.textContent = '正在启动批量生成任务...';
 
-        let successCount = 0;
-        for (let i = 0; i < pending.length; i++) {
-            const t = pending[i];
-            const tw = (Number.isFinite(Number(targetWords)) && Number(targetWords) > 0)
-                ? Number(targetWords)
-                : ((Number.isFinite(Number(t.target_words)) && Number(t.target_words) > 0) ? Number(t.target_words) : null);
-            try {
-                await requestGenerateChapter(projectId, t.id, tw);
-                successCount += 1;
-            } catch (e) {
-                writeFailedQueue.push({
-                    chapter_id: t.id,
-                    chapter_index: t.chapter_index,
-                    title: t.title || '',
-                    target_words: tw,
-                    error: e.message || '生成失败'
-                });
+        // 调用批量接口获取任务ID
+        const batchResult = await requestBatchGenerate(projectId, selected.id, pending.length, targetWords);
+
+        if (!batchResult.task_id) {
+            if (resultEl) resultEl.textContent = batchResult.message || '没有需要生成的章节';
+            setWriteBatchButtonsDisabled(false);
+            if (btn) hideLoading(btn, oldHtml || '一键补齐本卷剩余正文');
+            return;
+        }
+
+        const taskId = batchResult.task_id;
+        if (resultEl) resultEl.textContent = '批量生成任务已启动，正在轮询进度...';
+
+        // 轮询进度
+        let pollCount = 0;
+        const maxPolls = 600;
+        const pollInterval = 5000;
+
+        const pollTimer = setInterval(async () => {
+            pollCount++;
+            if (pollCount > maxPolls) {
+                clearInterval(pollTimer);
+                setWriteBatchButtonsDisabled(false);
+                if (btn) hideLoading(btn, oldHtml || '一键补齐本卷剩余正文');
+                await uiAlert('轮询超时，请刷新页面查看结果');
+                return;
             }
-            updateWriteBatchProgress(i + 1, pending.length, `第${selected.volume_index}卷补齐正文`);
-        }
 
-        if (resultEl) resultEl.textContent = `补齐完成：成功 ${successCount} 章，失败 ${writeFailedQueue.length} 章。`;
-        renderWriteFailedQueue();
-        if (writeFailedQueue.length) {
-            await uiAlert(`补齐完成：成功 ${successCount} 章，失败 ${writeFailedQueue.length} 章。可点击“重试失败章节”。`);
-        } else {
-            await uiAlert(`补齐完成：成功 ${successCount} 章。`);
-        }
-        await loadWriteBatchPanel(projectId);
-        await loadGeneratedChapters(projectId);
-        await loadOutline(projectId);
+            try {
+                const progress = await pollBatchProgress(taskId);
+
+                updateWriteBatchProgress(progress.current || 0, progress.total || pending.length, `第${selected.volume_index}卷补齐正文`);
+
+                if (resultEl) {
+                    resultEl.textContent = progress.message || `进度：${progress.current || 0}/${progress.total || 0}`;
+                }
+
+                if (progress.status === 'completed') {
+                    clearInterval(pollTimer);
+                    writeFailedQueue = progress.failed || [];
+                    renderWriteFailedQueue();
+
+                    if (resultEl) {
+                        resultEl.textContent = progress.message || `补齐完成：成功 ${progress.generated_count || 0} 章，失败 ${writeFailedQueue.length} 章。`;
+                    }
+
+                    if (writeFailedQueue.length) {
+                        await uiAlert(`补齐完成：成功 ${progress.generated_count || 0} 章，失败 ${writeFailedQueue.length} 章。可点击”重试失败章节”。`);
+                    } else {
+                        await uiAlert(`补齐完成：成功 ${progress.generated_count || 0} 章。`);
+                    }
+
+                    setWriteBatchButtonsDisabled(false);
+                    if (btn) hideLoading(btn, oldHtml || '一键补齐本卷剩余正文');
+                    await loadWriteBatchPanel(projectId);
+                    await loadGeneratedChapters(projectId);
+                    await loadOutline(projectId);
+                }
+
+                if (progress.status === 'failed') {
+                    clearInterval(pollTimer);
+                    setWriteBatchButtonsDisabled(false);
+                    if (btn) hideLoading(btn, oldHtml || '一键补齐本卷剩余正文');
+                    await uiAlert('批量生成失败: ' + (progress.error || '未知错误'));
+                }
+            } catch (e) {
+                console.error('轮询进度失败:', e);
+            }
+        }, pollInterval);
+
     } catch (e) {
         await uiAlert('一键补齐失败: ' + e.message);
-    } finally {
         setWriteBatchButtonsDisabled(false);
         if (btn) hideLoading(btn, oldHtml || '一键补齐本卷剩余正文');
     }
@@ -3829,6 +4104,269 @@ function changeWritePage(projectId, delta) {
 function toggleWriteChapter(projectId, chapterId) {
     writeExpanded[chapterId] = !writeExpanded[chapterId];
     renderWriteGeneratedPage(projectId);
+}
+
+// ========== 阅读模式 ==========
+function normalizeReadChapterRows(volumes, chaptersByVolume) {
+    const rows = [];
+    (volumes || []).forEach((vol, pos) => {
+        const displayVolumeIndex = (Number.isFinite(Number(vol.volume_index)) && Number(vol.volume_index) > 0)
+            ? Number(vol.volume_index)
+            : (pos + 1);
+        const chapters = Array.isArray(chaptersByVolume?.[vol.id]) ? chaptersByVolume[vol.id] : [];
+        chapters.forEach(chap => {
+            rows.push({
+                ...chap,
+                volume_id: vol.id,
+                volume_index: displayVolumeIndex,
+                volume_title: vol.title || `第${displayVolumeIndex}卷`
+            });
+        });
+    });
+    rows.sort((a, b) => {
+        if (Number(a.volume_index || 0) !== Number(b.volume_index || 0)) {
+            return Number(a.volume_index || 0) - Number(b.volume_index || 0);
+        }
+        return Number(a.chapter_index || 0) - Number(b.chapter_index || 0);
+    });
+    return rows;
+}
+
+function getReadCurrentChapter() {
+    const rows = readingState.chapters || [];
+    if (!rows.length) return null;
+    const hit = rows.find(ch => Number(ch.id) === Number(readingState.currentChapterId));
+    return hit || rows[0];
+}
+
+function getReadChapterIndexById(chapterId) {
+    return (readingState.chapters || []).findIndex(ch => Number(ch.id) === Number(chapterId));
+}
+
+function ensureReadCurrentChapterId() {
+    const rows = readingState.chapters || [];
+    if (!rows.length) {
+        readingState.currentChapterId = null;
+        return;
+    }
+    const idx = getReadChapterIndexById(readingState.currentChapterId);
+    if (idx >= 0) return;
+    const firstGenerated = rows.find(ch => ch.is_generated);
+    readingState.currentChapterId = Number((firstGenerated || rows[0]).id);
+}
+
+function applyReaderTextStyle() {
+    const article = document.getElementById('readChapterBody');
+    if (!article) return;
+    const settings = readingState.settings || {};
+    const fontSize = Math.max(14, Math.min(34, Number(settings.fontSize || 20)));
+    const lineHeight = Math.max(1.4, Math.min(2.8, Number(settings.lineHeight || 1.95)));
+    const maxWidth = Math.max(560, Math.min(1100, Number(settings.width || 840)));
+    article.style.fontSize = `${fontSize}px`;
+    article.style.lineHeight = `${lineHeight}`;
+    article.style.maxWidth = `${maxWidth}px`;
+}
+
+function updateReaderSettings() {
+    const fsEl = document.getElementById('readerFontSize');
+    const lhEl = document.getElementById('readerLineHeight');
+    const wdEl = document.getElementById('readerWidth');
+    if (!fsEl || !lhEl || !wdEl) return;
+    readingState.settings = {
+        fontSize: Math.max(14, Math.min(34, Number(fsEl.value || 20))),
+        lineHeight: Math.max(1.4, Math.min(2.8, Number(lhEl.value || 1.95))),
+        width: Math.max(560, Math.min(1100, Number(wdEl.value || 840)))
+    };
+    fsEl.value = String(readingState.settings.fontSize);
+    lhEl.value = String(readingState.settings.lineHeight);
+    wdEl.value = String(readingState.settings.width);
+    persistReaderSettings();
+    applyReaderTextStyle();
+}
+
+function renderReadToc() {
+    const desktop = document.getElementById('readTocList');
+    const mobile = document.getElementById('readTocListMobile');
+    if (!desktop || !mobile) return;
+    const rows = readingState.chapters || [];
+    if (!rows.length) {
+        const empty = `<div class="text-xs text-gray-500 p-2">暂无章节</div>`;
+        desktop.innerHTML = empty;
+        mobile.innerHTML = empty;
+        return;
+    }
+
+    const selectedVolumeId = Number(document.getElementById('readVolumeSelect')?.value || 0);
+    const filtered = selectedVolumeId > 0 ? rows.filter(r => Number(r.volume_id) === selectedVolumeId) : rows;
+
+    const html = filtered.map(chap => {
+        const active = Number(chap.id) === Number(readingState.currentChapterId);
+        const title = chap.title || `第${Number(chap.chapter_index || 0)}章`;
+        const status = chap.is_generated ? '' : '<span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">未生成</span>';
+        return `
+            <button
+                onclick="openReadChapter(${Number(chap.id)})"
+                class="w-full text-left px-2 py-2 rounded border ${active ? 'bg-indigo-50 border-indigo-300' : 'bg-white border-transparent hover:border-slate-200 hover:bg-slate-50'}"
+            >
+                <div class="text-[11px] text-slate-500">第${Number(chap.volume_index || 0)}卷 · 第${Number(chap.chapter_index || 0)}章</div>
+                <div class="text-sm text-slate-800 mt-0.5 break-all">${escapeHtml(title)}${status}</div>
+            </button>
+        `;
+    }).join('');
+
+    desktop.innerHTML = html;
+    mobile.innerHTML = html;
+    mobile.classList.toggle('hidden', !readingState.mobileTocOpen);
+}
+
+function updateReadHeader(chap) {
+    const titleEl = document.getElementById('readChapterTitle');
+    const metaEl = document.getElementById('readChapterMeta');
+    if (!titleEl || !metaEl) return;
+    if (!chap) {
+        titleEl.textContent = '请选择章节';
+        metaEl.textContent = '未选择';
+        return;
+    }
+    const chapterTitle = chap.title || `第${Number(chap.chapter_index || 0)}章`;
+    const status = chap.is_generated ? '已生成' : '未生成';
+    const wc = Number(chap.word_count || 0);
+    titleEl.textContent = chapterTitle;
+    metaEl.textContent = `第${Number(chap.volume_index || 0)}卷 · 第${Number(chap.chapter_index || 0)}章 · ${status}${wc > 0 ? ` · ${wc}字` : ''}`;
+}
+
+function renderReadCurrentChapter(scrollTop = false) {
+    const article = document.getElementById('readChapterBody');
+    const emptyEl = document.getElementById('readEmptyState');
+    const wrap = document.getElementById('readChapterBodyWrap');
+    if (!article || !emptyEl || !wrap) return;
+
+    ensureReadCurrentChapterId();
+    const chap = getReadCurrentChapter();
+    updateReadHeader(chap);
+    applyReaderTextStyle();
+
+    if (!chap) {
+        article.innerHTML = '';
+        emptyEl.classList.remove('hidden');
+        return;
+    }
+
+    if (chap.is_generated && chap.content && String(chap.content).trim()) {
+        emptyEl.classList.add('hidden');
+        article.innerHTML = marked.parse(chap.content);
+    } else {
+        emptyEl.classList.remove('hidden');
+        const fallback = String(chap.outline || chap.goal || '').trim();
+        article.innerHTML = fallback
+            ? `<div class="text-sm text-slate-600 bg-slate-100 border rounded p-3">本章尚未生成正文。<br>章节概要：${escapeHtml(fallback)}</div>`
+            : `<div class="text-sm text-slate-600 bg-slate-100 border rounded p-3">本章尚未生成正文。</div>`;
+    }
+
+    if (scrollTop) {
+        wrap.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+}
+
+function openReadChapter(chapterId, closeMobileToc = true) {
+    if (!chapterId) return;
+    readingState.currentChapterId = Number(chapterId);
+    const current = getReadCurrentChapter();
+    const volSelect = document.getElementById('readVolumeSelect');
+    if (current && volSelect && Number(volSelect.value || 0) !== Number(current.volume_id)) {
+        volSelect.value = String(current.volume_id);
+    }
+    if (closeMobileToc) {
+        readingState.mobileTocOpen = false;
+    }
+    renderReadToc();
+    renderReadCurrentChapter(true);
+}
+
+function gotoReadChapterByOffset(offset) {
+    const rows = readingState.chapters || [];
+    if (!rows.length) return;
+    ensureReadCurrentChapterId();
+    const idx = getReadChapterIndexById(readingState.currentChapterId);
+    if (idx < 0) return;
+    const nextIdx = Math.max(0, Math.min(rows.length - 1, idx + Number(offset || 0)));
+    const next = rows[nextIdx];
+    if (!next) return;
+    openReadChapter(next.id);
+}
+
+function gotoPrevReadChapter() {
+    gotoReadChapterByOffset(-1);
+}
+
+function gotoNextReadChapter() {
+    gotoReadChapterByOffset(1);
+}
+
+function toggleReadMobileToc() {
+    readingState.mobileTocOpen = !readingState.mobileTocOpen;
+    renderReadToc();
+}
+
+function handleReadVolumeChange() {
+    const selectedVolumeId = Number(document.getElementById('readVolumeSelect')?.value || 0);
+    const rows = (readingState.chapters || []).filter(r => Number(r.volume_id) === selectedVolumeId);
+    if (rows.length) {
+        const generated = rows.find(r => r.is_generated);
+        readingState.currentChapterId = Number((generated || rows[0]).id);
+    }
+    renderReadToc();
+    renderReadCurrentChapter(true);
+}
+
+async function initReadMode(projectId) {
+    if (!projectId || !currentProject) return;
+    if (readingState.loading) return;
+    readingState.loading = true;
+    readingState.projectId = Number(projectId);
+    readingState.mobileTocOpen = false;
+
+    const volumeSelect = document.getElementById('readVolumeSelect');
+    const emptyEl = document.getElementById('readEmptyState');
+    if (emptyEl) emptyEl.classList.remove('hidden');
+
+    try {
+        const volumes = await apiRequest(`/api/outline/${projectId}/volumes`);
+        const chaptersByVolume = {};
+        for (const vol of (volumes || [])) {
+            chaptersByVolume[vol.id] = await apiRequest(`/api/outline/${projectId}/volumes/${vol.id}/chapters`);
+        }
+        readingState.chapters = normalizeReadChapterRows(volumes, chaptersByVolume);
+        ensureReadCurrentChapterId();
+
+        if (volumeSelect) {
+            if (!volumes.length) {
+                volumeSelect.innerHTML = '<option value="">暂无卷</option>';
+            } else {
+                volumeSelect.innerHTML = volumes.map((vol, idx) => {
+                    const displayVolumeIndex = (Number.isFinite(Number(vol.volume_index)) && Number(vol.volume_index) > 0)
+                        ? Number(vol.volume_index)
+                        : (idx + 1);
+                    const volRows = readingState.chapters.filter(ch => Number(ch.volume_id) === Number(vol.id));
+                    const generatedCount = volRows.filter(ch => ch.is_generated).length;
+                    const label = `第${displayVolumeIndex}卷：${vol.title || '未命名卷'}（${generatedCount}/${volRows.length}已生成）`;
+                    return `<option value="${Number(vol.id)}">${escapeHtml(label)}</option>`;
+                }).join('');
+                const current = getReadCurrentChapter();
+                const firstVolumeId = current?.volume_id || volumes[0]?.id;
+                if (firstVolumeId) volumeSelect.value = String(firstVolumeId);
+            }
+        }
+
+        renderReadToc();
+        renderReadCurrentChapter(true);
+        updateReaderSettings();
+    } catch (e) {
+        console.error('加载阅读模式失败', e);
+        await uiAlert('加载阅读模式失败: ' + e.message);
+    } finally {
+        readingState.loading = false;
+    }
 }
 
 // ========== 工具 ==========
